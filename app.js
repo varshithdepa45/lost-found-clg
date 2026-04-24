@@ -1,9 +1,9 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  getDocs, 
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  getDocs,
   deleteDoc,
   doc,
   query,
@@ -11,14 +11,14 @@ import {
   orderBy,
   serverTimestamp,
   updateDoc,
-  getDoc
+  getDoc,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
-import { 
-  getAuth, 
-  createUserWithEmailAndPassword, 
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
-  onAuthStateChanged 
+  onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 // ==================== FIREBASE CONFIG ====================
@@ -29,7 +29,7 @@ const firebaseConfig = {
   projectId: "lost-found-clg",
   storageBucket: "lost-found-clg.firebasestorage.app",
   messagingSenderId: "336035491718",
-  appId: "1:336035491718:web:c32c173e2438157526f897"
+  appId: "1:336035491718:web:c32c173e2438157526f897",
 };
 
 const app = initializeApp(firebaseConfig);
@@ -53,7 +53,7 @@ function toggleAuth() {
 async function signUp() {
   const email = document.getElementById("authEmail").value;
   const password = document.getElementById("authPassword").value;
-  
+
   if (!email || !password) {
     alert("Please fill in all fields");
     return;
@@ -72,7 +72,7 @@ async function signUp() {
 async function signIn() {
   const email = document.getElementById("authEmail").value;
   const password = document.getElementById("authPassword").value;
-  
+
   if (!email || !password) {
     alert("Please fill in all fields");
     return;
@@ -157,7 +157,7 @@ async function submitData() {
       userId: currentUser ? currentUser.uid : "anonymous",
       createdAt: serverTimestamp(),
       viewed: false,
-      matched: false
+      matched: false,
     });
 
     alert("✅ Item posted successfully!");
@@ -180,18 +180,34 @@ function clearForm() {
 }
 
 function categorizeItem(itemName) {
-  const electronics = ["airpods", "phone", "laptop", "headphones", "charger", "earbuds", "watch", "tablet"];
+  const electronics = [
+    "airpods",
+    "phone",
+    "laptop",
+    "headphones",
+    "charger",
+    "earbuds",
+    "watch",
+    "tablet",
+  ];
   const documents = ["id", "card", "passport", "license", "certificate"];
-  const accessories = ["wallet", "keys", "bag", "backpack", "scarf", "umbrella"];
+  const accessories = [
+    "wallet",
+    "keys",
+    "bag",
+    "backpack",
+    "scarf",
+    "umbrella",
+  ];
   const clothing = ["jacket", "shirt", "pants", "shoes", "hat", "coat"];
 
   const lower = itemName.toLowerCase();
-  
-  if (electronics.some(e => lower.includes(e))) return "Electronics";
-  if (documents.some(d => lower.includes(d))) return "Documents";
-  if (accessories.some(a => lower.includes(a))) return "Accessories";
-  if (clothing.some(c => lower.includes(c))) return "Clothing";
-  
+
+  if (electronics.some((e) => lower.includes(e))) return "Electronics";
+  if (documents.some((d) => lower.includes(d))) return "Documents";
+  if (accessories.some((a) => lower.includes(a))) return "Accessories";
+  if (clothing.some((c) => lower.includes(c))) return "Clothing";
+
   return "Other";
 }
 
@@ -199,11 +215,11 @@ async function loadAllData() {
   try {
     const querySnapshot = await getDocs(collection(db, "items"));
     allItems = [];
-    
+
     querySnapshot.forEach((docSnapshot) => {
       allItems.push({
         id: docSnapshot.id,
-        ...docSnapshot.data()
+        ...docSnapshot.data(),
       });
     });
 
@@ -226,11 +242,12 @@ function filterItems() {
   const filterType = document.getElementById("filterType").value;
   const filterCategory = document.getElementById("filterCategory").value;
 
-  let filtered = allItems.filter(item => {
-    const matchesSearch = item.item.includes(searchTerm) || 
-                         item.itemOriginal.toLowerCase().includes(searchTerm) ||
-                         item.description.toLowerCase().includes(searchTerm) ||
-                         item.location.includes(searchTerm);
+  let filtered = allItems.filter((item) => {
+    const matchesSearch =
+      item.item.includes(searchTerm) ||
+      item.itemOriginal.toLowerCase().includes(searchTerm) ||
+      item.description.toLowerCase().includes(searchTerm) ||
+      item.location.includes(searchTerm);
     const matchesType = !filterType || item.type === filterType;
     const matchesCategory = !filterCategory || item.category === filterCategory;
 
@@ -242,7 +259,7 @@ function filterItems() {
 
 function displayItems(items) {
   const listContainer = document.getElementById("list");
-  
+
   if (items.length === 0) {
     listContainer.innerHTML = `
       <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #9ca3af;">
@@ -252,19 +269,20 @@ function displayItems(items) {
     return;
   }
 
-  listContainer.innerHTML = items.map(item => {
-    const isUserItem = currentUser && item.userId === currentUser.uid;
-    const matchingItem = findMatchingItem(item);
-    
-    return `
+  listContainer.innerHTML = items
+    .map((item) => {
+      const isUserItem = currentUser && item.userId === currentUser.uid;
+      const matchingItem = findMatchingItem(item);
+
+      return `
       <div class="item-card">
-        <span class="item-badge ${item.type === 'lost' ? 'badge-lost' : 'badge-found'}">
-          ${item.type === 'lost' ? '❌ LOST' : '✅ FOUND'}
+        <span class="item-badge ${item.type === "lost" ? "badge-lost" : "badge-found"}">
+          ${item.type === "lost" ? "❌ LOST" : "✅ FOUND"}
         </span>
         
         <h3 class="item-title">${item.itemOriginal}</h3>
         
-        ${item.description ? `<p class="item-description">"${item.description}"</p>` : ''}
+        ${item.description ? `<p class="item-description">"${item.description}"</p>` : ""}
         
         <div class="item-meta">
           <div class="meta-item">
@@ -281,42 +299,52 @@ function displayItems(items) {
           </div>
         </div>
 
-        ${matchingItem ? `
+        ${
+          matchingItem
+            ? `
           <div class="match-badge">
-            🎉 MATCH FOUND! Someone posted a matching ${matchingItem.type === 'lost' ? 'found' : 'lost'} item!
+            🎉 MATCH FOUND! Someone posted a matching ${matchingItem.type === "lost" ? "found" : "lost"} item!
           </div>
-        ` : ''}
+        `
+            : ""
+        }
 
         <div class="item-footer">
           <button class="contact-btn" onclick="showContact('${item.id}', ${JSON.stringify(item).replace(/'/g, "&apos;")})">
             📞 View Contact
           </button>
-          ${isUserItem ? `<button class="delete-btn" onclick="deleteItem('${item.id}')">🗑️ Delete</button>` : ''}
+          ${isUserItem ? `<button class="delete-btn" onclick="deleteItem('${item.id}')">🗑️ Delete</button>` : ""}
         </div>
       </div>
     `;
-  }).join('');
+    })
+    .join("");
 }
 
 function findMatchingItem(item) {
-  return allItems.find(other => {
+  return allItems.find((other) => {
     if (other.id === item.id) return false;
-    
+
     // Match logic: same item type, opposite lost/found status, similar location
     const sameItemName = other.item === item.item;
     const oppositeType = other.type !== item.type;
-    const similarLocation = other.location === item.location || 
-                           item.description.toLowerCase().includes(other.description.toLowerCase()) ||
-                           other.description.toLowerCase().includes(item.description.toLowerCase());
-    
+    const similarLocation =
+      other.location === item.location ||
+      item.description
+        .toLowerCase()
+        .includes(other.description.toLowerCase()) ||
+      other.description.toLowerCase().includes(item.description.toLowerCase());
+
     return sameItemName && oppositeType && similarLocation;
   });
 }
 
 function checkForMatches() {
-  const userItems = allItems.filter(item => currentUser && item.userId === currentUser.uid);
-  const hasMatches = userItems.some(item => findMatchingItem(item));
-  
+  const userItems = allItems.filter(
+    (item) => currentUser && item.userId === currentUser.uid,
+  );
+  const hasMatches = userItems.some((item) => findMatchingItem(item));
+
   const notification = document.getElementById("matchNotification");
   if (hasMatches) {
     notification.classList.remove("hidden");
@@ -333,9 +361,9 @@ function showContact(itemId, item) {
     <strong>Email:</strong> ${item.email}<br><br>
     <strong>Phone:</strong> ${item.phone}<br><br>
     <strong>Item:</strong> ${item.itemOriginal}<br><br>
-    <strong>Status:</strong> ${item.type === 'lost' ? 'Lost' : 'Found'}<br><br>
+    <strong>Status:</strong> ${item.type === "lost" ? "Lost" : "Found"}<br><br>
     <strong>Location:</strong> ${item.locationOriginal}<br><br>
-    ${item.description ? `<strong>Description:</strong> ${item.description}<br><br>` : ''}
+    ${item.description ? `<strong>Description:</strong> ${item.description}<br><br>` : ""}
     <strong>Date:</strong> ${formatDate(item.date)}
   `;
   document.getElementById("contactModal").classList.add("show");
@@ -348,7 +376,7 @@ function closeContactModal() {
 
 function copyContact() {
   if (!selectedItemForContact) return;
-  
+
   const text = `Name: ${selectedItemForContact.name}\nEmail: ${selectedItemForContact.email}\nPhone: ${selectedItemForContact.phone}`;
   navigator.clipboard.writeText(text).then(() => {
     alert("✅ Contact copied to clipboard!");
@@ -357,7 +385,7 @@ function copyContact() {
 
 async function deleteItem(itemId) {
   if (!confirm("Are you sure you want to delete this item?")) return;
-  
+
   try {
     await deleteDoc(doc(db, "items", itemId));
     alert("Item deleted!");
@@ -373,7 +401,7 @@ function showMyPosts() {
     return;
   }
 
-  const myPosts = allItems.filter(item => item.userId === currentUser.uid);
+  const myPosts = allItems.filter((item) => item.userId === currentUser.uid);
   const listContainer = document.getElementById("list");
 
   if (myPosts.length === 0) {
@@ -391,7 +419,11 @@ function showMyPosts() {
 function formatDate(dateString) {
   if (!dateString) return "Unknown";
   const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  return date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 // ==================== AUTH STATE LISTENER ====================
@@ -423,11 +455,3 @@ loadAllData();
 
 // Auto-refresh data every 5 seconds
 setInterval(loadAllData, 5000);
-        ${data.location}<br>
-        ${matchText}
-      </li>
-    `;
-  });
-}
-
-loadData();
