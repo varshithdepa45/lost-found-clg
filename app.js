@@ -6,12 +6,7 @@ import {
   getDocs,
   deleteDoc,
   doc,
-  query,
-  where,
-  orderBy,
   serverTimestamp,
-  updateDoc,
-  getDoc,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import {
   getAuth,
@@ -22,7 +17,6 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 // ==================== FIREBASE CONFIG ====================
-// ✅ Firebase config for lost-found-clg project (FRESH)
 const firebaseConfig = {
   apiKey: "AIzaSyEgHqH9fXqbNRycCO3sP1xDVNeLd0vhE",
   authDomain: "lost-found-clg.firebaseapp.com",
@@ -33,9 +27,16 @@ const firebaseConfig = {
   measurementId: "G-7VYJTfZQQ",
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
+// Initialize Firebase
+let app, db, auth;
+try {
+  app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
+  auth = getAuth(app);
+  console.log("✅ Firebase initialized successfully!");
+} catch (error) {
+  console.error("❌ Firebase initialization error:", error);
+}
 
 // ==================== GLOBAL STATE ====================
 let currentUser = null;
@@ -61,11 +62,15 @@ async function signUp() {
   }
 
   try {
-    await createUserWithEmailAndPassword(auth, email, password);
-    alert("Account created! You're now signed in.");
+    console.log("Creating user...");
+    const result = await createUserWithEmailAndPassword(auth, email, password);
+    console.log("✅ User created:", result.user.email);
+    alert("✅ Account created! You're now signed in.");
     closeAuthModal();
+    updateUIForUser();
     loadAllData();
   } catch (error) {
+    console.error("❌ Sign up error:", error);
     alert("Error: " + error.message);
   }
 }
@@ -73,28 +78,22 @@ async function signUp() {
 async function signIn() {
   const email = document.getElementById("authEmail").value;
   const password = document.getElementById("authPassword").value;
-
+  
   if (!email || !password) {
     alert("Please fill in all fields");
     return;
   }
 
   try {
-    await signInWithEmailAndPassword(auth, email, password);
-    alert("Signed in successfully!");
+    console.log("Signing in...");
+    const result = await signInWithEmailAndPassword(auth, email, password);
+    console.log("✅ User signed in:", result.user.email);
+    alert("✅ Signed in successfully!");
     closeAuthModal();
+    updateUIForUser();
     loadAllData();
   } catch (error) {
-    alert("Error: " + error.message);
-  }
-}
-
-async function logout() {
-  try {
-    await signOut(auth);
-    alert("Logged out successfully!");
-    currentUser = null;
-    updateUIForUser();
+    console.error("❌ Sign in error:", error);
     loadAllData();
   } catch (error) {
     alert("Error: " + error.message);
@@ -143,7 +142,8 @@ async function submitData() {
   }
 
   try {
-    await addDoc(collection(db, "items"), {
+    console.log("📝 Posting item:", item);
+    const docRef = await addDoc(collection(db, "items"), {
       name,
       email: userEmail,
       phone,
@@ -160,13 +160,13 @@ async function submitData() {
       viewed: false,
       matched: false,
     });
-
+    console.log("✅ Item posted successfully! Doc ID:", docRef.id);
     alert("✅ Item posted successfully!");
     clearForm();
     loadAllData();
   } catch (error) {
+    console.error("❌ Error posting item:", error);
     alert("Error: " + error.message);
-    console.error(error);
   }
 }
 
@@ -214,6 +214,7 @@ function categorizeItem(itemName) {
 
 async function loadAllData() {
   try {
+    console.log("📂 Loading data from Firestore...");
     const querySnapshot = await getDocs(collection(db, "items"));
     allItems = [];
 
@@ -223,6 +224,8 @@ async function loadAllData() {
         ...docSnapshot.data(),
       });
     });
+
+    console.log(`✅ Loaded ${allItems.length} items from database`);
 
     // Sort by date (newest first)
     allItems.sort((a, b) => {
@@ -234,7 +237,8 @@ async function loadAllData() {
     filterItems();
     checkForMatches();
   } catch (error) {
-    console.error("Error loading data:", error);
+    console.error("❌ Error loading data:", error);
+    alert("Error loading data: " + error.message);
   }
 }
 
@@ -452,7 +456,24 @@ window.deleteItem = deleteItem;
 window.showMyPosts = showMyPosts;
 
 // ==================== INITIALIZATION ====================
+console.log("🚀 Initializing Lost & Found App...");
+
+// Monitor auth state
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    console.log("✅ User authenticated:", user.email);
+    currentUser = user;
+    updateUIForUser();
+  } else {
+    console.log("👤 No user authenticated");
+    currentUser = null;
+    updateUIForUser();
+  }
+});
+
 loadAllData();
 
 // Auto-refresh data every 5 seconds
 setInterval(loadAllData, 5000);
+
+console.log("✨ App initialization complete!");

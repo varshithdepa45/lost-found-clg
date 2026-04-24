@@ -6,7 +6,8 @@
 
 ## 🌐 **Access Your Website**
 
-### **Click Here to Open:** 
+### **Click Here to Open:**
+
 ### 👉 **[https://varshithdepa45.github.io/lost-found-clg](https://varshithdepa45.github.io/lost-found-clg)** 👈
 
 ---
@@ -30,16 +31,16 @@
 
 1. On the left side, fill the **"Post an Item"** form:
 
-   | Field | What to Enter |
-   |-------|---------------|
-   | **Your Name** | Your full name |
-   | **Email** | Your email address |
-   | **Phone Number** | Your contact number (e.g., +1 555-0000) |
-   | **Item Type** | Select **"Lost"** |
-   | **Item Name** | What did you lose? (e.g., "Black AirPods", "College ID") |
-   | **Description** | Details about the item (color, brand, any special marks) |
-   | **Location** | Where did you lose it? (e.g., "Library 2nd Floor", "Cafeteria") |
-   | **Date** | When did you lose it? (pick the date) |
+   | Field            | What to Enter                                                   |
+   | ---------------- | --------------------------------------------------------------- |
+   | **Your Name**    | Your full name                                                  |
+   | **Email**        | Your email address                                              |
+   | **Phone Number** | Your contact number (e.g., +1 555-0000)                         |
+   | **Item Type**    | Select **"Lost"**                                               |
+   | **Item Name**    | What did you lose? (e.g., "Black AirPods", "College ID")        |
+   | **Description**  | Details about the item (color, brand, any special marks)        |
+   | **Location**     | Where did you lose it? (e.g., "Library 2nd Floor", "Cafeteria") |
+   | **Date**         | When did you lose it? (pick the date)                           |
 
 2. Click **"📤 Post Item"** button
 3. ✅ Your item is now posted!
@@ -87,6 +88,7 @@ When someone posts a lost item and another person posts the exact same item as "
 ✨ **You'll see:** "🎉 MATCH FOUND! Someone posted a matching found item!"
 
 This means:
+
 - The system detected a potential match
 - You can contact the other person
 - Arrange to exchange the item!
@@ -120,6 +122,7 @@ This means:
 ## ⚠️ **Important Tips**
 
 ✅ **DO:**
+
 - Be honest about item descriptions
 - Include specific details (color, brand, condition)
 - Share your real contact info so people can reach you
@@ -127,6 +130,7 @@ This means:
 - Be polite when contacting others
 
 ❌ **DON'T:**
+
 - Post false information
 - Claim items that aren't yours
 - Share personal details in item descriptions
@@ -167,11 +171,13 @@ A: System automatically detects when a lost + found item is the same, at the sam
 ## 🎓 **Share This With Your College**
 
 **Website Link:**
+
 ```
 https://varshithdepa45.github.io/lost-found-clg
 ```
 
 Tell your friends:
+
 > "Hey! Check out this Lost & Found platform for our college. If you lose something, post it here and others can help you find it! 📍"
 
 ---
@@ -199,6 +205,7 @@ Tell your friends:
 ## 💡 **Example Posts**
 
 ### **Lost Item Example:**
+
 - **Name:** Raj Kumar
 - **Email:** raj@college.edu
 - **Phone:** +1 555-1234
@@ -209,6 +216,7 @@ Tell your friends:
 - **Date:** April 20, 2026
 
 ### **Found Item Example:**
+
 - **Name:** Priya Singh
 - **Email:** priya@college.edu
 - **Phone:** +1 555-5678
