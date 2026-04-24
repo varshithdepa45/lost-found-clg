@@ -29,7 +29,8 @@ const firebaseConfig = {
   projectId: "lost-found-clg",
   storageBucket: "lost-found-clg.firebasestorage.app",
   messagingSenderId: "336035491718",
-  appId: "1:336035491718:web:532c173e2438157526f807"
+  appId: "1:336035491718:web:532c173e2438157526f807",
+  measurementId: "G-ZD6ECfKB8V",
 };
 
 const app = initializeApp(firebaseConfig);
