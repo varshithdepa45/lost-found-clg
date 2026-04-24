@@ -27,7 +27,6 @@ const firebaseConfig = {
   measurementId: "G-7VYJTfZQQ",
 };
 
-// Initialize Firebase
 let app, db, auth;
 try {
   app = initializeApp(firebaseConfig);
@@ -194,16 +193,14 @@ function clearForm() {
 
 function categorizeItem(itemName) {
   const electronics = [
-    "airpods",
     "phone",
     "laptop",
+    "tablet",
     "headphones",
     "charger",
-    "earbuds",
     "watch",
-    "tablet",
   ];
-  const documents = ["id", "card", "passport", "license", "certificate"];
+  const documents = ["id", "license", "passport", "certificate", "card"];
   const accessories = [
     "wallet",
     "keys",
@@ -220,10 +217,10 @@ function categorizeItem(itemName) {
   if (documents.some((d) => lower.includes(d))) return "Documents";
   if (accessories.some((a) => lower.includes(a))) return "Accessories";
   if (clothing.some((c) => lower.includes(c))) return "Clothing";
-
   return "Other";
 }
 
+// ==================== DATA LOADING ====================
 async function loadAllData() {
   try {
     console.log("📂 Loading data from Firestore...");
@@ -239,7 +236,6 @@ async function loadAllData() {
 
     console.log(`✅ Loaded ${allItems.length} items from database`);
 
-    // Sort by date (newest first)
     allItems.sort((a, b) => {
       const dateA = new Date(a.date || 0);
       const dateB = new Date(b.date || 0);
@@ -254,105 +250,78 @@ async function loadAllData() {
   }
 }
 
+// ==================== FILTERING & DISPLAY ====================
 function filterItems() {
-  const searchTerm = document.getElementById("searchInput").value.toLowerCase();
-  const filterType = document.getElementById("filterType").value;
-  const filterCategory = document.getElementById("filterCategory").value;
+  const searchQuery = document
+    .getElementById("searchInput")
+    .value.toLowerCase();
+  const typeFilter = document.getElementById("typeFilter").value;
+  const categoryFilter = document.getElementById("categoryFilter").value;
 
-  let filtered = allItems.filter((item) => {
-    const matchesSearch =
-      item.item.includes(searchTerm) ||
-      item.itemOriginal.toLowerCase().includes(searchTerm) ||
-      item.description.toLowerCase().includes(searchTerm) ||
-      item.location.includes(searchTerm);
-    const matchesType = !filterType || item.type === filterType;
-    const matchesCategory = !filterCategory || item.category === filterCategory;
+  let filtered = allItems;
 
-    return matchesSearch && matchesType && matchesCategory;
-  });
+  if (typeFilter !== "") {
+    filtered = filtered.filter((item) => item.type === typeFilter);
+  }
+
+  if (categoryFilter !== "") {
+    filtered = filtered.filter((item) => item.category === categoryFilter);
+  }
+
+  if (searchQuery !== "") {
+    filtered = filtered.filter(
+      (item) =>
+        item.itemOriginal.toLowerCase().includes(searchQuery) ||
+        item.description.toLowerCase().includes(searchQuery) ||
+        item.locationOriginal.toLowerCase().includes(searchQuery),
+    );
+  }
 
   displayItems(filtered);
 }
 
 function displayItems(items) {
-  const listContainer = document.getElementById("list");
+  const itemsContainer = document.getElementById("itemsContainer");
+  itemsContainer.innerHTML = "";
 
   if (items.length === 0) {
-    listContainer.innerHTML = `
-      <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #9ca3af;">
-        <p style="font-size: 16px;">No items found. Try adjusting your filters.</p>
-      </div>
-    `;
+    itemsContainer.innerHTML = "<p>No items found</p>";
     return;
   }
 
-  listContainer.innerHTML = items
-    .map((item) => {
-      const isUserItem = currentUser && item.userId === currentUser.uid;
-      const matchingItem = findMatchingItem(item);
-
-      return `
-      <div class="item-card">
-        <span class="item-badge ${item.type === "lost" ? "badge-lost" : "badge-found"}">
-          ${item.type === "lost" ? "❌ LOST" : "✅ FOUND"}
-        </span>
-        
-        <h3 class="item-title">${item.itemOriginal}</h3>
-        
-        ${item.description ? `<p class="item-description">"${item.description}"</p>` : ""}
-        
-        <div class="item-meta">
-          <div class="meta-item">
-            <span class="meta-label">📍 Location:</span><br>${item.locationOriginal}
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">📅 Date:</span><br>${formatDate(item.date)}
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">🏷️ Type:</span><br>${item.category}
-          </div>
-          <div class="meta-item">
-            <span class="meta-label">👤 Posted by:</span><br>${item.name}
-          </div>
-        </div>
-
-        ${
-          matchingItem
-            ? `
-          <div class="match-badge">
-            🎉 MATCH FOUND! Someone posted a matching ${matchingItem.type === "lost" ? "found" : "lost"} item!
-          </div>
-        `
-            : ""
-        }
-
-        <div class="item-footer">
-          <button class="contact-btn" onclick="showContact('${item.id}', ${JSON.stringify(item).replace(/'/g, "&apos;")})">
-            📞 View Contact
-          </button>
-          ${isUserItem ? `<button class="delete-btn" onclick="deleteItem('${item.id}')">🗑️ Delete</button>` : ""}
-        </div>
-      </div>
+  items.forEach((item) => {
+    const itemDiv = document.createElement("div");
+    itemDiv.className = "item-card";
+    itemDiv.innerHTML = `
+      <h3>${item.itemOriginal}</h3>
+      <p><strong>Type:</strong> ${item.type}</p>
+      <p><strong>Category:</strong> ${item.category}</p>
+      <p><strong>Location:</strong> ${item.locationOriginal}</p>
+      <p><strong>Date:</strong> ${formatDate(item.date)}</p>
+      <p>${item.description}</p>
+      ${item.matched ? '<p style="color: green;"><strong>✅ Matched!</strong></p>' : ""}
+      <button onclick="showContact('${item.id}', ${JSON.stringify(item).replace(/"/g, "&quot;")})">View Contact</button>
+      ${currentUser && currentUser.uid === item.userId ? `<button onclick="deleteItem('${item.id}')">Delete</button>` : ""}
     `;
-    })
-    .join("");
+    itemsContainer.appendChild(itemDiv);
+  });
 }
 
+// ==================== MATCHING ====================
 function findMatchingItem(item) {
-  return allItems.find((other) => {
-    if (other.id === item.id) return false;
+  return allItems.some((other) => {
+    if (other.id === item.id || other.type === item.type) return false;
 
-    // Match logic: same item type, opposite lost/found status, similar location
-    const sameItemName = other.item === item.item;
-    const oppositeType = other.type !== item.type;
-    const similarLocation =
-      other.location === item.location ||
+    const itemLower = item.item.toLowerCase();
+    const otherLower = other.item.toLowerCase();
+
+    return (
+      itemLower === otherLower ||
       item.description
         .toLowerCase()
         .includes(other.description.toLowerCase()) ||
-      other.description.toLowerCase().includes(item.description.toLowerCase());
-
-    return sameItemName && oppositeType && similarLocation;
+      other.description.toLowerCase().includes(item.description.toLowerCase())
+    );
   });
 }
 
@@ -362,33 +331,22 @@ function checkForMatches() {
   );
   const hasMatches = userItems.some((item) => findMatchingItem(item));
 
-  const notification = document.getElementById("matchNotification");
   if (hasMatches) {
-    notification.classList.remove("hidden");
-  } else {
-    notification.classList.add("hidden");
+    console.log("🎉 You have matching items!");
   }
 }
 
+// ==================== CONTACT & MODALS ====================
 function showContact(itemId, item) {
   selectedItemForContact = item;
-  const contactDetails = document.getElementById("contactDetails");
-  contactDetails.innerHTML = `
-    <strong>Name:</strong> ${item.name}<br><br>
-    <strong>Email:</strong> ${item.email}<br><br>
-    <strong>Phone:</strong> ${item.phone}<br><br>
-    <strong>Item:</strong> ${item.itemOriginal}<br><br>
-    <strong>Status:</strong> ${item.type === "lost" ? "Lost" : "Found"}<br><br>
-    <strong>Location:</strong> ${item.locationOriginal}<br><br>
-    ${item.description ? `<strong>Description:</strong> ${item.description}<br><br>` : ""}
-    <strong>Date:</strong> ${formatDate(item.date)}
-  `;
+  document.getElementById("contactName").textContent = item.name;
+  document.getElementById("contactEmail").textContent = item.email;
+  document.getElementById("contactPhone").textContent = item.phone;
   document.getElementById("contactModal").classList.add("show");
 }
 
 function closeContactModal() {
   document.getElementById("contactModal").classList.remove("show");
-  selectedItemForContact = null;
 }
 
 function copyContact() {
@@ -414,23 +372,12 @@ async function deleteItem(itemId) {
 
 function showMyPosts() {
   if (!currentUser) {
-    alert("Please sign in to view your posts");
+    alert("Please sign in first");
     return;
   }
 
-  const myPosts = allItems.filter((item) => item.userId === currentUser.uid);
-  const listContainer = document.getElementById("list");
-
-  if (myPosts.length === 0) {
-    listContainer.innerHTML = `
-      <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #9ca3af;">
-        <p style="font-size: 16px;">You haven't posted any items yet.</p>
-      </div>
-    `;
-    return;
-  }
-
-  displayItems(myPosts);
+  const myItems = allItems.filter((item) => item.userId === currentUser.uid);
+  displayItems(myItems);
 }
 
 function formatDate(dateString) {
@@ -444,7 +391,6 @@ function formatDate(dateString) {
 }
 
 // ==================== EXPOSE FUNCTIONS TO GLOBAL SCOPE ====================
-// This allows HTML onclick handlers to call these functions
 window.toggleAuth = toggleAuth;
 window.signUp = signUp;
 window.signIn = signIn;
@@ -461,7 +407,6 @@ window.showMyPosts = showMyPosts;
 // ==================== INITIALIZATION ====================
 console.log("🚀 Initializing Lost & Found App...");
 
-// Monitor auth state
 onAuthStateChanged(auth, (user) => {
   if (user) {
     console.log("✅ User authenticated:", user.email);
@@ -476,7 +421,6 @@ onAuthStateChanged(auth, (user) => {
 
 loadAllData();
 
-// Auto-refresh data every 5 seconds
 setInterval(loadAllData, 5000);
 
 console.log("✨ App initialization complete!");
