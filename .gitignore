@@ -1,0 +1,36 @@
+# .gitignore - Files to exclude from GitHub
+
+# Node modules (if using them)
+node_modules/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Firebase credentials (backup)
+.firebaserc
+*.json
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies
+package-lock.json
+yarn.lock
