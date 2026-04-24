@@ -111,6 +111,28 @@ async function logout() {
     alert("Error: " + error.message);
   }
 }
+
+function closeAuthModal() {
+  document.getElementById("authModal").classList.remove("show");
+  document.getElementById("authEmail").value = "";
+  document.getElementById("authPassword").value = "";
+}
+
+function updateUIForUser() {
+  const authBtn = document.getElementById("authBtn");
+  const myPostsBtn = document.getElementById("myPostsBtn");
+  const logoutBtn = document.getElementById("logoutBtn");
+  const userEmail = document.getElementById("userEmail");
+
+  if (currentUser) {
+    authBtn.classList.add("hidden");
+    myPostsBtn.classList.remove("hidden");
+    logoutBtn.classList.remove("hidden");
+    userEmail.value = currentUser.email;
+  } else {
+    authBtn.classList.remove("hidden");
+    myPostsBtn.classList.add("hidden");
+    logoutBtn.classList.add("hidden");
     userEmail.value = "";
   }
 }
