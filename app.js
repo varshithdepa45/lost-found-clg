@@ -18,13 +18,13 @@ import {
 
 // ==================== FIREBASE CONFIG ====================
 const firebaseConfig = {
-  apiKey: "AIzaSyEgHqH9fXqbNRycCO3sP1xDVNeLd0vhE",
+  apiKey: "AIzaSyBzaceNHFlq09fy6NDyRgcC93gPYLo0vhE",
   authDomain: "lost-found-clg.firebaseapp.com",
   projectId: "lost-found-clg",
   storageBucket: "lost-found-clg.firebasestorage.app",
-  messagingSenderId: "336035491718",
-  appId: "1:336035491718:web:33454cd1de75e43226f807",
-  measurementId: "G-7VYJTfZQQ",
+  messagingSenderId: "335035491718",
+  appId: "1:335035491718:web:0fc46d65558a627f26f807",
+  measurementId: "G-FVDL55B1JH",
 };
 
 let app, db, auth;
