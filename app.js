@@ -255,8 +255,8 @@ function filterItems() {
   const searchQuery = document
     .getElementById("searchInput")
     .value.toLowerCase();
-  const typeFilter = document.getElementById("typeFilter").value;
-  const categoryFilter = document.getElementById("categoryFilter").value;
+  const typeFilter = document.getElementById("filterType").value;
+  const categoryFilter = document.getElementById("filterCategory").value;
 
   let filtered = allItems;
 
