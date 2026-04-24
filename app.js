@@ -98,27 +98,19 @@ async function signIn() {
   }
 }
 
-function closeAuthModal() {
-  document.getElementById("authModal").classList.remove("show");
-  document.getElementById("authEmail").value = "";
-  document.getElementById("authPassword").value = "";
+async function logout() {
+  try {
+    await signOut(auth);
+    console.log("✅ User logged out");
+    alert("Logged out successfully!");
+    currentUser = null;
+    updateUIForUser();
+    loadAllData();
+  } catch (error) {
+    console.error("❌ Logout error:", error);
+    alert("Error: " + error.message);
+  }
 }
-
-function updateUIForUser() {
-  const authBtn = document.getElementById("authBtn");
-  const myPostsBtn = document.getElementById("myPostsBtn");
-  const logoutBtn = document.getElementById("logoutBtn");
-  const userEmail = document.getElementById("userEmail");
-
-  if (currentUser) {
-    authBtn.classList.add("hidden");
-    myPostsBtn.classList.remove("hidden");
-    logoutBtn.classList.remove("hidden");
-    userEmail.value = currentUser.email;
-  } else {
-    authBtn.classList.remove("hidden");
-    myPostsBtn.classList.add("hidden");
-    logoutBtn.classList.add("hidden");
     userEmail.value = "";
   }
 }
@@ -428,15 +420,6 @@ function formatDate(dateString) {
     day: "numeric",
   });
 }
-
-// ==================== AUTH STATE LISTENER ====================
-onAuthStateChanged(auth, (user) => {
-  currentUser = user;
-  updateUIForUser();
-  if (user) {
-    console.log("User signed in:", user.email);
-  }
-});
 
 // ==================== EXPOSE FUNCTIONS TO GLOBAL SCOPE ====================
 // This allows HTML onclick handlers to call these functions
