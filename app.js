@@ -22,15 +22,15 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 // ==================== FIREBASE CONFIG ====================
-// ✅ Firebase config for lost-found-clg project
+// ✅ Firebase config for lost-found-clg project (FRESH)
 const firebaseConfig = {
-  apiKey: "AIzaSyB6fvyCu03BGH-KwKo-PaBj1ysQjtH8",
+  apiKey: "AIzaSyEgHqH9fXqbNRycCO3sP1xDVNeLd0vhE",
   authDomain: "lost-found-clg.firebaseapp.com",
   projectId: "lost-found-clg",
   storageBucket: "lost-found-clg.firebasestorage.app",
   messagingSenderId: "336035491718",
-  appId: "1:336035491718:web:532c173e2438157526f807",
-  measurementId: "G-ZD6ECfKB8V",
+  appId: "1:336035491718:web:33454cd1de75e43226f807",
+  measurementId: "G-7VYJTfZQQ",
 };
 
 const app = initializeApp(firebaseConfig);
