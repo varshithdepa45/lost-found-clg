@@ -403,6 +403,21 @@ onAuthStateChanged(auth, (user) => {
   }
 });
 
+// ==================== EXPOSE FUNCTIONS TO GLOBAL SCOPE ====================
+// This allows HTML onclick handlers to call these functions
+window.toggleAuth = toggleAuth;
+window.signUp = signUp;
+window.signIn = signIn;
+window.logout = logout;
+window.closeAuthModal = closeAuthModal;
+window.submitData = submitData;
+window.filterItems = filterItems;
+window.showContact = showContact;
+window.closeContactModal = closeContactModal;
+window.copyContact = copyContact;
+window.deleteItem = deleteItem;
+window.showMyPosts = showMyPosts;
+
 // ==================== INITIALIZATION ====================
 loadAllData();
 
