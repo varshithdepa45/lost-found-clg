@@ -78,7 +78,7 @@ async function signUp() {
 async function signIn() {
   const email = document.getElementById("authEmail").value;
   const password = document.getElementById("authPassword").value;
-  
+
   if (!email || !password) {
     alert("Please fill in all fields");
     return;
@@ -94,8 +94,6 @@ async function signIn() {
     loadAllData();
   } catch (error) {
     console.error("❌ Sign in error:", error);
-    loadAllData();
-  } catch (error) {
     alert("Error: " + error.message);
   }
 }
