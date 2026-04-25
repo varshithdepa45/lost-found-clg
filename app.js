@@ -75,8 +75,8 @@ async function signUp() {
 }
 
 async function signIn() {
-  const email = document.getElementById("authEmail").value;
-  const password = document.getElementById("authPassword").value;
+  const email = document.getElementById("authEmailLogin").value;
+  const password = document.getElementById("authPasswordLogin").value;
 
   if (!email || !password) {
     alert("Please fill in all fields");
@@ -115,6 +115,26 @@ function closeAuthModal() {
   document.getElementById("authModal").classList.remove("show");
   document.getElementById("authEmail").value = "";
   document.getElementById("authPassword").value = "";
+  document.getElementById("authEmailLogin").value = "";
+  document.getElementById("authPasswordLogin").value = "";
+}
+
+function switchAuthTab(tab) {
+  const signupForm = document.getElementById("signupForm");
+  const signinForm = document.getElementById("signinForm");
+  const tabs = document.querySelectorAll(".auth-tab");
+
+  tabs.forEach((t) => t.classList.remove("active"));
+  signupForm.classList.remove("active");
+  signinForm.classList.remove("active");
+
+  if (tab === "signup") {
+    document.querySelector(".auth-tab:nth-child(1)").classList.add("active");
+    signupForm.classList.add("active");
+  } else {
+    document.querySelector(".auth-tab:nth-child(2)").classList.add("active");
+    signinForm.classList.add("active");
+  }
 }
 
 function updateUIForUser() {
@@ -423,6 +443,7 @@ window.signUp = signUp;
 window.signIn = signIn;
 window.logout = logout;
 window.closeAuthModal = closeAuthModal;
+window.switchAuthTab = switchAuthTab;
 window.submitData = submitData;
 window.filterItems = filterItems;
 window.showContact = showContact;
