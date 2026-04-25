@@ -101,6 +101,18 @@
         </div>
 
         <div class="form-group">
+          <label>Item Category</label>
+          <select id="category">
+            <option value="">Select category...</option>
+            <option value="Electronics">Electronics</option>
+            <option value="Documents">Documents</option>
+            <option value="Accessories">Accessories</option>
+            <option value="Clothing">Clothing</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+
+        <div class="form-group">
           <label>Item Description</label>
           <textarea
             id="description"
@@ -178,8 +190,23 @@
         <h2>Contact Information</h2>
         <div id="contactDetails">
           <p><strong>Name:</strong> <span id="contactName"></span></p>
-          <p><strong>Email:</strong> <a id="contactEmail" href="#" target="_blank" style="color: #6366f1; text-decoration: none; cursor: pointer;"></a></p>
-          <p><strong>Phone:</strong> <a id="contactPhone" href="#" style="color: #6366f1; text-decoration: none; cursor: pointer;"></a></p>
+          <p>
+            <strong>Email:</strong>
+            <a
+              id="contactEmail"
+              href="#"
+              target="_blank"
+              style="color: #6366f1; text-decoration: none; cursor: pointer"
+            ></a>
+          </p>
+          <p>
+            <strong>Phone:</strong>
+            <a
+              id="contactPhone"
+              href="#"
+              style="color: #6366f1; text-decoration: none; cursor: pointer"
+            ></a>
+          </p>
         </div>
         <button onclick="copyContact()" class="copy-btn">
           📋 Copy Contact

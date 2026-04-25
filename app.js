@@ -162,14 +162,26 @@ async function submitData() {
   const userEmail = document.getElementById("userEmail").value.trim();
   const phone = document.getElementById("phone").value.trim();
   const type = document.getElementById("type").value;
+  const category = document.getElementById("category").value;
   const item = document.getElementById("item").value.trim();
   const description = document.getElementById("description").value.trim();
   const location = document.getElementById("location").value.trim();
   const date = document.getElementById("date").value;
   const photoFile = document.getElementById("photoFile").files[0];
 
-  if (!name || !userEmail || !phone || !type || !item || !location || !date) {
-    alert("Please fill in all required fields");
+  if (
+    !name ||
+    !userEmail ||
+    !phone ||
+    !type ||
+    !category ||
+    !item ||
+    !location ||
+    !date
+  ) {
+    alert(
+      "⚠️ Please fill in all required fields (including Item Type and Category)",
+    );
     return;
   }
 
@@ -200,7 +212,7 @@ async function submitData() {
       location: location.toLowerCase(),
       locationOriginal: location,
       date,
-      category: categorizeItem(item),
+      category: category,
       userId: currentUser ? currentUser.uid : "anonymous",
       photoData: photoBase64,
       createdAt: serverTimestamp(),
@@ -221,6 +233,7 @@ function clearForm() {
   document.getElementById("name").value = "";
   document.getElementById("phone").value = "";
   document.getElementById("type").value = "";
+  document.getElementById("category").value = "";
   document.getElementById("item").value = "";
   document.getElementById("description").value = "";
   document.getElementById("location").value = "";
@@ -387,15 +400,15 @@ function checkForMatches() {
 function showContact(itemId, item) {
   selectedItemForContact = item;
   document.getElementById("contactName").textContent = item.name;
-  
+
   const emailLink = document.getElementById("contactEmail");
   emailLink.textContent = item.email;
   emailLink.href = `mailto:${item.email}`;
-  
+
   const phoneLink = document.getElementById("contactPhone");
   phoneLink.textContent = item.phone;
   phoneLink.href = `tel:${item.phone}`;
-  
+
   document.getElementById("contactModal").classList.add("show");
 }
 
