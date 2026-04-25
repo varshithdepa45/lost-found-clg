@@ -176,7 +176,11 @@
       <div class="modal-content">
         <span class="close" onclick="closeContactModal()">&times;</span>
         <h2>Contact Information</h2>
-        <div id="contactDetails"></div>
+        <div id="contactDetails">
+          <p><strong>Name:</strong> <span id="contactName"></span></p>
+          <p><strong>Email:</strong> <a id="contactEmail" href="#" target="_blank" style="color: #6366f1; text-decoration: none; cursor: pointer;"></a></p>
+          <p><strong>Phone:</strong> <a id="contactPhone" href="#" style="color: #6366f1; text-decoration: none; cursor: pointer;"></a></p>
+        </div>
         <button onclick="copyContact()" class="copy-btn">
           📋 Copy Contact
         </button>

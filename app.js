@@ -387,8 +387,15 @@ function checkForMatches() {
 function showContact(itemId, item) {
   selectedItemForContact = item;
   document.getElementById("contactName").textContent = item.name;
-  document.getElementById("contactEmail").textContent = item.email;
-  document.getElementById("contactPhone").textContent = item.phone;
+  
+  const emailLink = document.getElementById("contactEmail");
+  emailLink.textContent = item.email;
+  emailLink.href = `mailto:${item.email}`;
+  
+  const phoneLink = document.getElementById("contactPhone");
+  phoneLink.textContent = item.phone;
+  phoneLink.href = `tel:${item.phone}`;
+  
   document.getElementById("contactModal").classList.add("show");
 }
 
