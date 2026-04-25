@@ -15,6 +15,12 @@ import {
   signOut,
   onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
 // ==================== FIREBASE CONFIG ====================
 const firebaseConfig = {
@@ -27,11 +33,12 @@ const firebaseConfig = {
   measurementId: "G-FVDL55B1JH",
 };
 
-let app, db, auth;
+let app, db, auth, storage;
 try {
   app = initializeApp(firebaseConfig);
   db = getFirestore(app);
   auth = getAuth(app);
+  storage = getStorage(app);
   console.log("✅ Firebase initialized successfully!");
 } catch (error) {
   console.error("❌ Firebase initialization error:", error);
@@ -146,6 +153,7 @@ async function submitData() {
   const description = document.getElementById("description").value.trim();
   const location = document.getElementById("location").value.trim();
   const date = document.getElementById("date").value;
+  const photoFile = document.getElementById("photoFile").files[0];
 
   if (!name || !userEmail || !phone || !type || !item || !location || !date) {
     alert("Please fill in all required fields");
@@ -154,6 +162,19 @@ async function submitData() {
 
   try {
     console.log("📝 Posting item:", item);
+    let photoURL = null;
+
+    // Upload photo if provided
+    if (photoFile) {
+      console.log("📸 Uploading photo...");
+      const timestamp = Date.now();
+      const fileName = `photos/${timestamp}_${photoFile.name}`;
+      const storageRef = ref(storage, fileName);
+      await uploadBytes(storageRef, photoFile);
+      photoURL = await getDownloadURL(storageRef);
+      console.log("✅ Photo uploaded:", photoURL);
+    }
+
     const docRef = await addDoc(collection(db, "items"), {
       name,
       email: userEmail,
@@ -167,6 +188,7 @@ async function submitData() {
       date,
       category: categorizeItem(item),
       userId: currentUser ? currentUser.uid : "anonymous",
+      photoURL: photoURL,
       createdAt: serverTimestamp(),
       viewed: false,
       matched: false,
@@ -189,6 +211,7 @@ function clearForm() {
   document.getElementById("description").value = "";
   document.getElementById("location").value = "";
   document.getElementById("date").value = "";
+  document.getElementById("photoFile").value = "";
 }
 
 function categorizeItem(itemName) {
@@ -292,13 +315,23 @@ function displayItems(items) {
   items.forEach((item) => {
     const itemDiv = document.createElement("div");
     itemDiv.className = "item-card";
+    let photoHTML = "";
+    if (item.photoURL) {
+      photoHTML = `<img src="${item.photoURL}" alt="${item.itemOriginal}" style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; margin-bottom: 12px;">`;
+    }
     itemDiv.innerHTML = `
+      ${photoHTML}
       <h3>${item.itemOriginal}</h3>
       <p><strong>Type:</strong> ${item.type}</p>
       <p><strong>Category:</strong> ${item.category}</p>
       <p><strong>Location:</strong> ${item.locationOriginal}</p>
       <p><strong>Date:</strong> ${formatDate(item.date)}</p>
       <p>${item.description}</p>
+      <div style="background: #f5f5f5; padding: 10px; border-radius: 6px; margin: 10px 0;">
+        <p style="margin: 5px 0;"><strong>📝 Uploader:</strong> ${item.name}</p>
+        <p style="margin: 5px 0;"><strong>📧 Email:</strong> ${item.email}</p>
+        <p style="margin: 5px 0;"><strong>📱 Phone:</strong> ${item.phone}</p>
+      </div>
       ${item.matched ? '<p style="color: green;"><strong>✅ Matched!</strong></p>' : ""}
       <button onclick="showContact('${item.id}', ${JSON.stringify(item).replace(/"/g, "&quot;")})">View Contact</button>
       ${currentUser && currentUser.uid === item.userId ? `<button onclick="deleteItem('${item.id}')">Delete</button>` : ""}
