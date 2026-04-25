@@ -15,12 +15,6 @@ import {
   signOut,
   onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import {
-  getStorage,
-  ref,
-  uploadBytes,
-  getDownloadURL,
-} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
 // ==================== FIREBASE CONFIG ====================
 const firebaseConfig = {
@@ -33,12 +27,11 @@ const firebaseConfig = {
   measurementId: "G-FVDL55B1JH",
 };
 
-let app, db, auth, storage;
+let app, db, auth;
 try {
   app = initializeApp(firebaseConfig);
   db = getFirestore(app);
   auth = getAuth(app);
-  storage = getStorage(app);
   console.log("✅ Firebase initialized successfully!");
 } catch (error) {
   console.error("❌ Firebase initialization error:", error);
@@ -162,17 +155,18 @@ async function submitData() {
 
   try {
     console.log("📝 Posting item:", item);
-    let photoURL = null;
+    let photoBase64 = null;
 
-    // Upload photo if provided
+    // Convert photo to Base64 if provided
     if (photoFile) {
-      console.log("📸 Uploading photo...");
-      const timestamp = Date.now();
-      const fileName = `photos/${timestamp}_${photoFile.name}`;
-      const storageRef = ref(storage, fileName);
-      await uploadBytes(storageRef, photoFile);
-      photoURL = await getDownloadURL(storageRef);
-      console.log("✅ Photo uploaded:", photoURL);
+      console.log("📸 Converting photo to Base64...");
+      photoBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(photoFile);
+      });
+      console.log("✅ Photo converted to Base64");
     }
 
     const docRef = await addDoc(collection(db, "items"), {
@@ -188,7 +182,7 @@ async function submitData() {
       date,
       category: categorizeItem(item),
       userId: currentUser ? currentUser.uid : "anonymous",
-      photoURL: photoURL,
+      photoData: photoBase64,
       createdAt: serverTimestamp(),
       viewed: false,
       matched: false,
@@ -316,8 +310,8 @@ function displayItems(items) {
     const itemDiv = document.createElement("div");
     itemDiv.className = "item-card";
     let photoHTML = "";
-    if (item.photoURL) {
-      photoHTML = `<img src="${item.photoURL}" alt="${item.itemOriginal}" style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; margin-bottom: 12px;">`;
+    if (item.photoData) {
+      photoHTML = `<img src="${item.photoData}" alt="${item.itemOriginal}" style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; margin-bottom: 12px;">`;
     }
     itemDiv.innerHTML = `
       ${photoHTML}
