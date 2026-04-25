@@ -281,7 +281,7 @@ function filterItems() {
 }
 
 function displayItems(items) {
-  const itemsContainer = document.getElementById("itemsContainer");
+  const itemsContainer = document.getElementById("list");
   itemsContainer.innerHTML = "";
 
   if (items.length === 0) {
