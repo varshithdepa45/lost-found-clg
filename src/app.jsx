@@ -347,6 +347,19 @@ function formatDate(d) {
   });
 }
 
+function formatRelativeTime(ts) {
+  const ms = tsToMillis(ts);
+  if (!ms) return "";
+  const diff = Date.now() - ms;
+  if (diff < 0) return "just now";
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d ago`;
+  if (diff < 2_592_000_000) return `${Math.floor(diff / 604_800_000)}w ago`;
+  return formatDate(new Date(ms).toISOString().slice(0, 10));
+}
+
 function formatDistance(meters) {
   if (meters == null || !Number.isFinite(meters)) return null;
   if (meters < 100) return `${Math.round(meters)} m`;
@@ -1038,18 +1051,32 @@ function TopNavbar({
             </button>
           )}
 
+          {user && (
+            <div className="flex p-0.5 sm:p-1 rounded-xl bg-white/[0.04] border border-white/[0.06] text-[10px] sm:text-[11px] font-mono">
+              {[
+                { k: "all", label: "All Posts", active: !viewingMyPosts, onClick: onShowAll },
+                { k: "mine", label: "My Posts", active: viewingMyPosts, onClick: onShowMyPosts },
+              ].map((p) => (
+                <button
+                  key={p.k}
+                  onClick={p.onClick}
+                  className={cn(
+                    "px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg uppercase tracking-wider transition-colors",
+                    p.active
+                      ? "bg-gradient-to-br from-cyan-500/30 to-purple-500/30 text-white border border-white/[0.12] shadow-[0_0_14px_rgba(34,211,238,0.25)]"
+                      : "text-slate-400 hover:text-slate-200",
+                  )}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {user ? (
-            <>
-              <button
-                onClick={viewingMyPosts ? onShowAll : onShowMyPosts}
-                className="tn-btn tn-btn-ghost hidden sm:inline-flex"
-              >
-                {viewingMyPosts ? "All Items" : "My Posts"}
-              </button>
-              <button onClick={onSignOut} className="tn-btn tn-btn-ghost">
-                Sign out
-              </button>
-            </>
+            <button onClick={onSignOut} className="tn-btn tn-btn-ghost">
+              Sign out
+            </button>
           ) : (
             <button onClick={onSignIn} className="tn-btn tn-btn-ghost">
               Sign in
@@ -4761,6 +4788,10 @@ function UploadCard({
   recovered,
   pending,
   approved,
+  rejected = 0,
+  totalClaims = 0,
+  matchInfo,
+  scanning = false,
   onEdit,
   onDelete,
   onOpenChat,
@@ -4785,6 +4816,26 @@ function UploadCard({
         : "FOUND";
   const trustGrad = `tn-trust-${(item.id || "x").replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const photoSrc = item.photoData;
+
+  // Match analytics — only render pills when each metric has signal.
+  const matchPct = matchInfo?.score
+    ? Math.round(matchInfo.score * 100)
+    : 0;
+  const imgPct =
+    matchInfo?.imgSim != null ? Math.round(matchInfo.imgSim * 100) : null;
+  const nearbyCount = matchInfo?.nearbyCount || 0;
+  const fraud = matchInfo?.fraud;
+  const fraudColor =
+    fraud?.level === "high"
+      ? "#fb7185"
+      : fraud?.level === "medium"
+        ? "#fbbf24"
+        : "#34d399";
+  const trustColor =
+    trust >= 70 ? "#34d399" : trust >= 45 ? "#fbbf24" : "#94a3b8";
+
+  const uploadedAt = item.createdAt || item.date;
+  const relTime = formatRelativeTime(uploadedAt);
 
   return (
     <motion.div
@@ -4838,8 +4889,15 @@ function UploadCard({
 
       <div className="p-4 space-y-3">
         <div>
-          <div className="text-base font-semibold text-slate-50 leading-tight tn-line-clamp-1">
-            {item.itemOriginal || item.item || "Untitled"}
+          <div className="flex items-start justify-between gap-2">
+            <div className="text-base font-semibold text-slate-50 leading-tight tn-line-clamp-1 flex-1">
+              {item.itemOriginal || item.item || "Untitled"}
+            </div>
+            {relTime && (
+              <span className="shrink-0 text-[9.5px] font-mono uppercase tracking-[0.12em] text-slate-500">
+                ⏱ {relTime}
+              </span>
+            )}
           </div>
           <div className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5">
             <Icon.Pin />
@@ -4847,8 +4905,94 @@ function UploadCard({
           </div>
           <div className="text-[10px] text-slate-500 font-mono mt-0.5">
             {formatDate(item.date)}
+            {scanning && (
+              <span className="ml-2 text-purple-300/80">· scanning image…</span>
+            )}
           </div>
         </div>
+
+        {/* Match analytics + activity pills */}
+        <div className="flex flex-wrap gap-1.5">
+          {matchPct >= 25 && (
+            <span
+              className="tn-match-stat"
+              style={{ "--c": "#a855f7" }}
+              title="Strongest cross-link with an opposite-type item"
+            >
+              <Icon.Brain />
+              Match {matchPct}%
+            </span>
+          )}
+          {imgPct != null && imgPct >= 20 && (
+            <span
+              className="tn-match-stat"
+              style={{
+                "--c":
+                  imgPct >= 70 ? "#a855f7" : imgPct >= 40 ? "#22d3ee" : "#94a3b8",
+              }}
+              title="Best image similarity (dHash + colour histogram)"
+            >
+              <Icon.Sparkles />
+              Img {imgPct}%
+            </span>
+          )}
+          <span
+            className="tn-match-stat"
+            style={{ "--c": trustColor }}
+            title={`TrustScore: ${trust} · ${trustLabel(trust)}`}
+          >
+            <Icon.Shield />
+            Trust {trust}
+          </span>
+          {nearbyCount > 0 && (
+            <span
+              className="tn-match-stat"
+              style={{ "--c": "#22d3ee" }}
+              title="Opposite-type items within 1 km"
+            >
+              <Icon.Pin />
+              {nearbyCount} nearby
+            </span>
+          )}
+          {fraud && (
+            <span
+              className="tn-match-stat"
+              style={{ "--c": fraudColor }}
+              title={fraud.reasons.join(" · ") || "No anomalies detected"}
+            >
+              <Icon.Alert />
+              {fraud.level === "low"
+                ? "Low risk"
+                : fraud.level === "medium"
+                  ? "Med risk"
+                  : "High risk"}
+            </span>
+          )}
+        </div>
+
+        {/* Claim activity */}
+        {totalClaims > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+            <span className="text-slate-500 uppercase tracking-[0.16em] mr-0.5">
+              Activity
+            </span>
+            {pending > 0 && (
+              <span className="px-2 py-0.5 rounded-md bg-amber-400/10 text-amber-300 border border-amber-400/30">
+                {pending} pending
+              </span>
+            )}
+            {approved > 0 && (
+              <span className="px-2 py-0.5 rounded-md bg-emerald-400/10 text-emerald-300 border border-emerald-400/30 shadow-[0_0_8px_rgba(52,211,153,0.18)]">
+                {approved} approved
+              </span>
+            )}
+            {rejected > 0 && (
+              <span className="px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/30">
+                {rejected} rejected
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-3">
           <div className="relative w-12 h-12 shrink-0">
@@ -4968,6 +5112,10 @@ function YourUploads({
   onOpenChat,
   onPostItem,
 }) {
+  // Image fingerprints (cached at module scope; this hook just
+  // surfaces what's been computed for the current items list).
+  const { fingerprints, computing } = useImageFingerprints(allItems);
+
   // Index claims on the user's items so we can render counts inline.
   const claimsByItem = useMemo(() => {
     const m = new Map();
@@ -4979,6 +5127,40 @@ function YourUploads({
     }
     return m;
   }, [claims, user]);
+
+  // For each upload, compute the strongest opposite-type match,
+  // image similarity, count of nearby (<=1km, opposite-type) items,
+  // and fraud risk. Reuses the same helpers as the SmartMatch panel.
+  const matchInfoById = useMemo(() => {
+    const out = new Map();
+    for (const my of items) {
+      const myType = (my.type || "").toLowerCase();
+      const oppType = myType === "lost" ? "found" : myType === "found" ? "lost" : null;
+      let best = { score: 0, imgSim: null, distance: null, otherId: null };
+      let nearbyCount = 0;
+      if (oppType) {
+        for (const o of allItems) {
+          if (o.id === my.id) continue;
+          if ((o.type || "").toLowerCase() !== oppType) continue;
+          const d = itemDistanceMeters(my, o);
+          const imgSim = imageSimilarity(
+            fingerprints[my.id],
+            fingerprints[o.id],
+          );
+          const lost = myType === "lost" ? my : o;
+          const found = myType === "found" ? my : o;
+          const score = advancedMatchScore({ lost, found, imgSim, distance: d });
+          if (score > best.score) {
+            best = { score, imgSim, distance: d, otherId: o.id };
+          }
+          if (d != null && d <= 1000) nearbyCount++;
+        }
+      }
+      const fraud = itemFraudRisk(my, allItems, fingerprints);
+      out.set(my.id, { ...best, nearbyCount, fraud });
+    }
+    return out;
+  }, [items, allItems, fingerprints]);
 
   const [sortBy, setSortBy] = useState("recent"); // 'recent' | 'progress' | 'trust'
 
@@ -5122,13 +5304,14 @@ function YourUploads({
       ) : (
         <motion.div
           layout
-          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4"
+          className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4"
         >
           <AnimatePresence mode="popLayout">
             {sorted.map((item, idx) => {
               const cs = claimsByItem.get(item.id) || [];
               const pending = cs.filter((c) => c.status === "pending").length;
               const approvedClaims = cs.filter((c) => c.status === "approved");
+              const rejected = cs.filter((c) => c.status === "rejected").length;
               return (
                 <UploadCard
                   key={item.id}
@@ -5138,6 +5321,10 @@ function YourUploads({
                   recovered={isRecoveredItem(item)}
                   pending={pending}
                   approved={approvedClaims.length}
+                  rejected={rejected}
+                  totalClaims={cs.length}
+                  matchInfo={matchInfoById.get(item.id)}
+                  scanning={computing && !!item.photoData}
                   onEdit={() => onEdit(item)}
                   onDelete={() => onDelete(item.id)}
                   onOpenChat={
