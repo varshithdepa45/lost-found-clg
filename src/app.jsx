@@ -943,7 +943,9 @@ function InteractiveMap({
     if (filter === "all") return itemsWithCoords;
     if (filter === "recovered")
       return itemsWithCoords.filter((i) => isRecoveredItem(i));
-    return itemsWithCoords.filter((i) => i.type === filter);
+    return itemsWithCoords.filter(
+      (i) => (i.type || "").toString().trim().toLowerCase() === filter,
+    );
   }, [itemsWithCoords, filter, isRecoveredItem]);
 
   // One-time map init — defensive against load-order races and
@@ -1118,9 +1120,22 @@ function InteractiveMap({
       }
       const [lat, lng] = coords;
       const recovered = isRecoveredItem(item);
-      const isLost = item.type === "lost";
-      const isFound = item.type === "found";
-      if (!isLost && !isFound) counts.unknown++;
+      // Defensive: normalize so "Lost", " found ", etc. all work.
+      const t = (item.type || "").toString().trim().toLowerCase();
+      const isLost = t === "lost";
+      const isFound = t === "found";
+      if (!isLost && !isFound) {
+        counts.unknown++;
+        if (counts.unknown <= 3) {
+          console.warn(
+            "[TraceNet] item with unrecognized type:",
+            JSON.stringify(item.type),
+            "id=",
+            item.id,
+            "→ rendering as found",
+          );
+        }
+      }
 
       // Determine kind in priority order: recovered overrides lost/found
       const kind = recovered ? "recovered" : isLost ? "lost" : "found";
@@ -1308,8 +1323,10 @@ function InteractiveMap({
     }
   }, [visibleItems, cardItem]);
 
-  const lostCount = items.filter((i) => i.type === "lost").length;
-  const foundCount = items.filter((i) => i.type === "found").length;
+  const itemTypeOf = (i) =>
+    (i?.type || "").toString().trim().toLowerCase();
+  const lostCount = items.filter((i) => itemTypeOf(i) === "lost").length;
+  const foundCount = items.filter((i) => itemTypeOf(i) === "found").length;
   const recoveredCount = items.filter((i) => isRecoveredItem(i)).length;
   const selectedItem = selectedId
     ? visibleItems.find((i) => i.id === selectedId)
