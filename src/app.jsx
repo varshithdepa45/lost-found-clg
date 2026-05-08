@@ -4754,6 +4754,205 @@ function EditItemSheet({ item, onClose }) {
   );
 }
 
+/* ================== MATCH PREVIEW MODAL ================== */
+
+function MatchPreviewModal({ item, allItems, fingerprints, onClose }) {
+  const matches = useMemo(() => {
+    if (!item || !Array.isArray(allItems)) return [];
+    const myType = (item.type || "").toLowerCase();
+    const oppType =
+      myType === "lost" ? "found" : myType === "found" ? "lost" : null;
+    if (!oppType) return [];
+    const out = [];
+    for (const o of allItems) {
+      if (o.id === item.id) continue;
+      if ((o.type || "").toLowerCase() !== oppType) continue;
+      const distance = itemDistanceMeters(item, o);
+      const imgSim = imageSimilarity(
+        fingerprints?.[item.id],
+        fingerprints?.[o.id],
+      );
+      const lost = myType === "lost" ? item : o;
+      const found = myType === "found" ? item : o;
+      const score = advancedMatchScore({ lost, found, imgSim, distance });
+      if (score > 0.1) out.push({ other: o, score, imgSim, distance });
+    }
+    out.sort((a, b) => b.score - a.score);
+    return out.slice(0, 5);
+  }, [item, allItems, fingerprints]);
+
+  return (
+    <AnimatePresence>
+      {item && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[72] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ y: 20, opacity: 0, scale: 0.96 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            exit={{ y: 20, opacity: 0, scale: 0.96 }}
+            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+            onClick={(e) => e.stopPropagation()}
+            className="tn-glass-strong rounded-3xl w-full max-w-lg max-h-[88vh] overflow-y-auto relative"
+          >
+            <div className="pointer-events-none absolute inset-0 rounded-3xl tn-grad-border opacity-70" />
+            <div className="relative p-5 sm:p-6">
+              <div className="flex items-start justify-between mb-4">
+                <div className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-[0.22em] text-purple-400 font-mono mb-1">
+                    Smart Matches
+                  </div>
+                  <h2 className="text-xl font-semibold tracking-tight text-slate-100 truncate">
+                    {item.itemOriginal || item.item || "Untitled"}
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Top probable links with{" "}
+                    {item.type === "lost" ? "Found" : "Lost"} reports.
+                  </p>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="tn-btn tn-btn-ghost p-2 rounded-lg shrink-0 ml-2"
+                  aria-label="Close"
+                >
+                  <Icon.X />
+                </button>
+              </div>
+
+              {matches.length === 0 ? (
+                <div className="text-center py-10">
+                  <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-white/[0.03] border border-white/[0.06] mb-3 text-slate-500">
+                    <Icon.Sparkles />
+                  </div>
+                  <p className="text-slate-200 text-sm font-medium">
+                    No matches yet
+                  </p>
+                  <p className="text-slate-500 text-xs mt-1">
+                    Matches surface when an opposite-type item shares
+                    enough title, description, location, or image signal.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {matches.map((m, idx) => (
+                    <MatchPreviewRow
+                      key={m.other.id}
+                      idx={idx}
+                      myItem={item}
+                      otherItem={m.other}
+                      score={m.score}
+                      imgSim={m.imgSim}
+                      distance={m.distance}
+                      allItems={allItems}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function MatchPreviewRow({ idx, myItem, otherItem, score, imgSim, distance, allItems }) {
+  const myAccent = myItem.type === "lost" ? "#fb7185" : "#34d399";
+  const otherAccent = otherItem.type === "lost" ? "#fb7185" : "#34d399";
+  const pct = Math.round(score * 100);
+  const imgPct = imgSim != null ? Math.round(imgSim * 100) : null;
+  const distLabel = formatDistance(distance);
+  const otherTrust = computeTrustScore(otherItem, allItems);
+  const fraudColor =
+    otherTrust >= 70 ? "#34d399" : otherTrust >= 45 ? "#fbbf24" : "#94a3b8";
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: idx * 0.05, duration: 0.3 }}
+      className="rounded-2xl bg-white/[0.025] border border-white/[0.06] p-3 hover:border-purple-400/35 transition-colors"
+    >
+      <div className="flex items-center gap-3">
+        <div className="tn-match-thumb" style={{ "--c": myAccent }}>
+          {myItem.photoData ? (
+            <img src={myItem.photoData} alt="" />
+          ) : (
+            <div className="tn-match-thumb-empty">
+              <span>{CAT_GLYPH[myItem.category] || "📦"}</span>
+            </div>
+          )}
+          <div className="tn-match-thumb-tag">
+            {myItem.type === "lost" ? "LOST" : "FOUND"}
+          </div>
+        </div>
+        <span className="tn-match-arrow">↔</span>
+        <div className="tn-match-thumb" style={{ "--c": otherAccent }}>
+          {otherItem.photoData ? (
+            <img src={otherItem.photoData} alt="" />
+          ) : (
+            <div className="tn-match-thumb-empty">
+              <span>{CAT_GLYPH[otherItem.category] || "📦"}</span>
+            </div>
+          )}
+          <div className="tn-match-thumb-tag">
+            {otherItem.type === "lost" ? "LOST" : "FOUND"}
+          </div>
+        </div>
+        <div className="flex-1 min-w-0 ml-1">
+          <div className="text-sm font-semibold text-slate-100 truncate">
+            {otherItem.itemOriginal || otherItem.item || "Untitled"}
+          </div>
+          <div className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5">
+            <Icon.Pin />
+            {otherItem.locationOriginal || otherItem.location || "—"}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-xl font-mono font-bold tabular-nums text-slate-100 leading-none">
+            {pct}%
+          </div>
+          <div className="text-[8.5px] font-mono text-purple-300 uppercase tracking-[0.12em] mt-0.5">
+            match
+          </div>
+        </div>
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        {imgPct != null && (
+          <span
+            className="tn-match-stat"
+            style={{
+              "--c":
+                imgPct >= 70 ? "#a855f7" : imgPct >= 40 ? "#22d3ee" : "#94a3b8",
+            }}
+          >
+            <Icon.Sparkles />
+            Img {imgPct}%
+          </span>
+        )}
+        {distLabel && (
+          <span className="tn-match-stat" style={{ "--c": "#22d3ee" }}>
+            <Icon.Pin />
+            {distLabel}
+          </span>
+        )}
+        <span
+          className="tn-match-stat"
+          style={{ "--c": fraudColor }}
+          title="TrustScore of the matching post"
+        >
+          <Icon.Shield />
+          Trust {otherTrust}
+        </span>
+      </div>
+    </motion.div>
+  );
+}
+
 /* ================== YOUR UPLOADS DASHBOARD ================== */
 
 function UploadStat({ label, value, accent }) {
@@ -4795,6 +4994,7 @@ function UploadCard({
   onEdit,
   onDelete,
   onOpenChat,
+  onViewMatches,
   idx,
 }) {
   const status = recovered
@@ -5070,20 +5270,30 @@ function UploadCard({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 pt-2 border-t border-white/[0.06]">
+        <div className="flex items-center gap-1.5 pt-2 border-t border-white/[0.06] flex-wrap">
           {!recovered && approved > 0 && onOpenChat && (
             <button
               onClick={onOpenChat}
-              className="tn-btn tn-btn-primary text-[11px] py-1.5 px-3 flex-1"
+              className="tn-btn tn-btn-primary text-[11px] py-1.5 px-3 flex-1 min-w-[64px]"
               title="Open the secure chat with the claimant"
             >
               <Icon.Mail />
               Chat
             </button>
           )}
+          {onViewMatches && (
+            <button
+              onClick={onViewMatches}
+              className="tn-btn text-[11px] py-1.5 px-3 bg-purple-400/10 text-purple-200 border border-purple-400/30 hover:bg-purple-400/20 hover:border-purple-400/50 flex-1 min-w-[80px]"
+              title="See potential cross-links for this item"
+            >
+              <Icon.Brain />
+              Matches
+            </button>
+          )}
           <button
             onClick={onEdit}
-            className="tn-btn tn-btn-ghost text-[11px] py-1.5 px-3 flex-1"
+            className="tn-btn tn-btn-ghost text-[11px] py-1.5 px-3 flex-1 min-w-[64px]"
             title="Edit item details"
           >
             ✎ Edit
@@ -5111,6 +5321,7 @@ function YourUploads({
   onShowAll,
   onOpenChat,
   onPostItem,
+  onViewMatches,
 }) {
   // Image fingerprints (cached at module scope; this hook just
   // surfaces what's been computed for the current items list).
@@ -5215,6 +5426,14 @@ function YourUploads({
           <p className="text-sm text-slate-400 mt-1">
             Manage everything you've reported on the network in one place.
           </p>
+          {user && (
+            <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-400/10 border border-cyan-400/30 text-[10px] font-mono text-cyan-200">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.7)]" />
+              Filtering as{" "}
+              <span className="text-white">{user.email || user.uid?.slice(0, 8)}</span>{" "}
+              · {items.length} post{items.length === 1 ? "" : "s"}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button onClick={onShowAll} className="tn-btn tn-btn-ghost">
@@ -5327,6 +5546,9 @@ function YourUploads({
                   scanning={computing && !!item.photoData}
                   onEdit={() => onEdit(item)}
                   onDelete={() => onDelete(item.id)}
+                  onViewMatches={
+                    onViewMatches ? () => onViewMatches(item) : null
+                  }
                   onOpenChat={
                     approvedClaims.length > 0
                       ? () => onOpenChat(approvedClaims[0])
@@ -5350,6 +5572,10 @@ function App() {
   const [contactItem, setContactItem] = useState(null);
   const [viewingMyPosts, setViewingMyPosts] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
+  const [matchPreviewItem, setMatchPreviewItem] = useState(null);
+  // App-level fingerprint hook (the cache is module-level, so this is
+  // free if SmartMatchCards / YourUploads also called it earlier).
+  const appFingerprints = useImageFingerprints(items);
 
   // Claims + chat
   const claims = useClaims(user);
@@ -5438,10 +5664,38 @@ function App() {
     return () => unsub();
   }, []);
 
+  // Items belonging to the currently signed-in user.
+  // Matches by UID first (the canonical, stable identity), then by
+  // email for anonymous-posted items (so legacy posts created before
+  // sign-in can still surface in "My Posts").
+  const myItems = useMemo(() => {
+    if (!user) return [];
+    const uid = user.uid;
+    const email = (user.email || "").toLowerCase();
+    return items.filter((i) => {
+      if (i.userId && i.userId === uid) return true;
+      if (
+        i.userId === "anonymous" &&
+        email &&
+        (i.email || "").toLowerCase() === email
+      )
+        return true;
+      return false;
+    });
+  }, [items, user]);
+
   const visibleItems = useMemo(() => {
-    if (viewingMyPosts && user) return items.filter((i) => i.userId === user.uid);
+    if (viewingMyPosts && user) return myItems;
     return items;
-  }, [items, user, viewingMyPosts]);
+  }, [items, myItems, user, viewingMyPosts]);
+
+  // One-line diagnostic so the filter is debuggable from DevTools.
+  useEffect(() => {
+    if (!viewingMyPosts || !user) return;
+    console.info(
+      `[TraceNet] My Posts filter — uid=${user.uid?.slice(0, 8) || "?"}… email=${user.email || "(none)"} → ${myItems.length}/${items.length} items`,
+    );
+  }, [viewingMyPosts, user, myItems.length, items.length]);
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -5501,7 +5755,7 @@ function App() {
 
       {viewingMyPosts && user ? (
         <YourUploads
-          items={items.filter((i) => i.userId === user.uid)}
+          items={myItems}
           allItems={items}
           claims={claims}
           user={user}
@@ -5510,6 +5764,7 @@ function App() {
           onShowAll={() => setViewingMyPosts(false)}
           onOpenChat={handleOpenChat}
           onPostItem={() => setPostOpen(true)}
+          onViewMatches={(item) => setMatchPreviewItem(item)}
         />
       ) : (
         <ItemGrid
@@ -5546,6 +5801,12 @@ function App() {
       <EditItemSheet
         item={editingItem}
         onClose={() => setEditingItem(null)}
+      />
+      <MatchPreviewModal
+        item={matchPreviewItem}
+        allItems={items}
+        fingerprints={appFingerprints.fingerprints}
+        onClose={() => setMatchPreviewItem(null)}
       />
     </>
   );
