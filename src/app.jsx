@@ -110,6 +110,23 @@ function locationToCoords(location) {
   return [lat, lng];
 }
 
+// Prefer real lat/lon (from geocoded autocomplete) and gracefully
+// fall back to deterministic hashed coords for legacy items.
+function itemCoords(item) {
+  const lat = Number(item?.lat);
+  const lon = Number(item?.lon);
+  if (
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    !(lat === 0 && lon === 0) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lon) <= 180
+  ) {
+    return [lat, lon];
+  }
+  return locationToCoords(item?.locationOriginal || item?.location || "");
+}
+
 function formatDate(d) {
   if (!d) return "Unknown";
   const date = new Date(d);
@@ -650,13 +667,12 @@ function InteractiveMap({ items }) {
   const [filter, setFilter] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
   const [scrollZoom, setScrollZoom] = useState(false);
+  const [userLocation, setUserLocation] = useState(null); // { coords:[lat,lon], accuracy }
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState(null);
 
   const itemsWithCoords = useMemo(
-    () =>
-      items.map((i) => ({
-        ...i,
-        coords: locationToCoords(i.locationOriginal || i.location || ""),
-      })),
+    () => items.map((i) => ({ ...i, coords: itemCoords(i) })),
     [items],
   );
 
@@ -809,7 +825,75 @@ function InteractiveMap({ items }) {
         }).addTo(linksLayer.current);
       }
     }
-  }, [visibleItems, selectedId]);
+
+    // "You are here" marker + accuracy + 2km nearby halo
+    if (userLocation && Array.isArray(userLocation.coords)) {
+      const me = userLocation.coords;
+      const acc = Math.min(
+        Math.max(Number(userLocation.accuracy) || 50, 25),
+        500,
+      );
+
+      // Accuracy circle (real GPS uncertainty)
+      L.circle(me, {
+        radius: acc,
+        color: "#22d3ee",
+        weight: 1.5,
+        opacity: 0.7,
+        fillColor: "#22d3ee",
+        fillOpacity: 0.10,
+        interactive: false,
+      }).addTo(linksLayer.current);
+
+      // 2km "nearby" halo
+      L.circle(me, {
+        radius: 2000,
+        color: "#22d3ee",
+        weight: 1.2,
+        opacity: 0.4,
+        fillColor: "#22d3ee",
+        fillOpacity: 0.025,
+        dashArray: "6 8",
+        interactive: false,
+      }).addTo(linksLayer.current);
+
+      // Glowing "You" pin
+      const html = `
+        <div class="tn-you">
+          <span class="tn-you-ring"></span>
+          <span class="tn-you-ring tn-you-ring-2"></span>
+          <span class="tn-you-core"></span>
+        </div>
+      `;
+      const icon = L.divIcon({
+        className: "tn-marker-icon",
+        html,
+        iconSize: [46, 46],
+        iconAnchor: [23, 23],
+      });
+      const popupHtml = `
+        <div class="tn-pop">
+          <div class="tn-pop-head">
+            <span class="tn-pop-badge" style="--c:#22d3ee">You</span>
+            <span class="tn-pop-cat"><span class="tn-pop-glyph">📡</span>Geolocation</span>
+          </div>
+          <div class="tn-pop-title">You are here</div>
+          <div class="tn-pop-meta">
+            <div><span>📍</span>${me[0].toFixed(4)}°, ${me[1].toFixed(4)}°</div>
+            <div><span>📡</span>±${Math.round(userLocation.accuracy || 0)} m accuracy</div>
+          </div>
+        </div>
+      `;
+      L.marker(me, { icon, zIndexOffset: 1000 })
+        .bindPopup(popupHtml, {
+          className: "tn-popup",
+          maxWidth: 240,
+          minWidth: 210,
+          offset: [0, -10],
+        })
+        .addTo(markersLayer.current);
+    }
+  }, [visibleItems, selectedId, userLocation]);
 
   // Open the popup of the selected marker
   useEffect(() => {
@@ -829,6 +913,49 @@ function InteractiveMap({ items }) {
     if (mapInstance.current)
       mapInstance.current.flyTo(MAP_CENTER, 13, { duration: 0.7 });
   };
+
+  const handleLocateMe = useCallback(() => {
+    setLocError(null);
+    if (!navigator.geolocation) {
+      setLocError("Geolocation isn't supported by this browser");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const coords = [pos.coords.latitude, pos.coords.longitude];
+        setUserLocation({ coords, accuracy: pos.coords.accuracy || 50 });
+        setLocating(false);
+        if (mapInstance.current) {
+          mapInstance.current.flyTo(coords, 14, { duration: 1.0 });
+        }
+      },
+      (err) => {
+        setLocating(false);
+        const msg =
+          err.code === 1
+            ? "Location permission denied"
+            : err.code === 2
+              ? "Location currently unavailable"
+              : err.code === 3
+                ? "Location request timed out"
+                : "Couldn't get your location";
+        setLocError(msg);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+    );
+  }, []);
+
+  // Items within 2km of the user
+  const nearbyMeCount = useMemo(() => {
+    if (!userLocation || !window.L) return 0;
+    const L = window.L;
+    const me = L.latLng(userLocation.coords);
+    return itemsWithCoords.reduce(
+      (n, i) => n + (L.latLng(i.coords).distanceTo(me) <= 2000 ? 1 : 0),
+      0,
+    );
+  }, [itemsWithCoords, userLocation]);
 
   return (
     <section id="network-map" className="px-3 sm:px-6 lg:px-10 pt-6">
@@ -900,8 +1027,30 @@ function InteractiveMap({ items }) {
           ))}
         </div>
 
-        {/* Bottom-left: scroll-zoom toggle + reset */}
-        <div className="absolute bottom-4 left-4 z-[400] flex items-center gap-2">
+        {/* Bottom-left: locate-me + scroll-zoom toggle + reset */}
+        <div className="absolute bottom-4 left-4 z-[400] flex items-center gap-2 flex-wrap max-w-[calc(100%-2rem)]">
+          <button
+            onClick={handleLocateMe}
+            disabled={locating}
+            className={cn(
+              "px-3 py-1.5 rounded-lg backdrop-blur border text-[10px] font-mono uppercase tracking-wider transition-colors flex items-center gap-1.5 disabled:opacity-70",
+              userLocation
+                ? "bg-cyan-400/20 border-cyan-400/45 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.3)]"
+                : "bg-black/60 border-white/[0.08] text-slate-300 hover:text-white",
+            )}
+            title="Center map on your location"
+          >
+            {locating ? (
+              <>
+                <span className="w-2.5 h-2.5 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin" />
+                locating…
+              </>
+            ) : userLocation ? (
+              <>📍 you · centered</>
+            ) : (
+              <>📍 locate me</>
+            )}
+          </button>
           <button
             onClick={() => setScrollZoom((s) => !s)}
             className={cn(
@@ -914,9 +1063,13 @@ function InteractiveMap({ items }) {
           >
             scroll-zoom · {scrollZoom ? "on" : "off"}
           </button>
-          {(selectedId || filter !== "all") && (
+          {(selectedId || filter !== "all" || userLocation) && (
             <button
-              onClick={handleReset}
+              onClick={() => {
+                setUserLocation(null);
+                setLocError(null);
+                handleReset();
+              }}
               className="px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-300 hover:text-white transition-colors"
             >
               ↺ reset
@@ -924,7 +1077,21 @@ function InteractiveMap({ items }) {
           )}
         </div>
 
-        {/* Bottom-right: hint or selected info */}
+        {/* Geolocation error toast */}
+        <AnimatePresence>
+          {locError && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              className="absolute bottom-16 left-4 z-[420] px-3 py-2 rounded-lg bg-rose-500/15 backdrop-blur border border-rose-500/40 text-[11px] font-mono text-rose-200 max-w-[260px]"
+            >
+              {locError}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Bottom-right: hint / selected info / nearby-me count */}
         <AnimatePresence mode="wait">
           {selectedItem ? (
             <motion.div
@@ -943,6 +1110,27 @@ function InteractiveMap({ items }) {
               </div>
               <div className="text-slate-400 truncate font-mono text-[11px] mt-0.5">
                 {selectedItem.locationOriginal || selectedItem.location || "—"}
+              </div>
+            </motion.div>
+          ) : userLocation ? (
+            <motion.div
+              key="nearby-me"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.25 }}
+              className="absolute bottom-4 right-4 z-[400] max-w-[260px] px-3 py-2 rounded-xl bg-black/65 backdrop-blur border border-cyan-400/35 text-xs shadow-[0_0_14px_rgba(34,211,238,0.18)]"
+            >
+              <div className="text-[10px] uppercase tracking-[0.18em] text-cyan-300 font-mono mb-0.5 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                Near you · 2km radius
+              </div>
+              <div className="text-slate-100 font-medium">
+                {nearbyMeCount} {nearbyMeCount === 1 ? "item" : "items"} within range
+              </div>
+              <div className="text-slate-400 font-mono text-[11px] mt-0.5">
+                {userLocation.coords[0].toFixed(3)}°,{" "}
+                {userLocation.coords[1].toFixed(3)}°
               </div>
             </motion.div>
           ) : (
@@ -1589,6 +1777,188 @@ function Field({ label, v, onChange, placeholder, type = "text", as = "input", f
   );
 }
 
+/* ================== LOCATION AUTOCOMPLETE (Nominatim) ================== */
+
+const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
+
+function primaryName(s) {
+  return (s.display_name || "").split(",")[0].trim() || s.display_name || "—";
+}
+function secondaryName(s) {
+  const parts = (s.display_name || "").split(",");
+  return parts.slice(1).join(",").trim();
+}
+
+function LocationAutocomplete({ value, onChange, onSelect, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const wrapRef = useRef(null);
+  const debounceRef = useRef(null);
+  const reqIdRef = useRef(0);
+
+  // Click outside closes the dropdown
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  // Debounced fetch from Nominatim (free, OSM-backed, no API key)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = (value || "").trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const myReqId = ++reqIdRef.current;
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const url =
+          `${NOMINATIM_URL}?q=${encodeURIComponent(q)}` +
+          `&format=json&addressdetails=1&limit=6`;
+        const res = await fetch(url, {
+          headers: { Accept: "application/json" },
+        });
+        const data = await res.json();
+        if (myReqId !== reqIdRef.current) return; // discard stale
+        setSuggestions(Array.isArray(data) ? data : []);
+        setHighlight(-1);
+      } catch {
+        if (myReqId === reqIdRef.current) setSuggestions([]);
+      } finally {
+        if (myReqId === reqIdRef.current) setLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(debounceRef.current);
+  }, [value]);
+
+  const pick = (s) => {
+    onSelect({
+      name: s.display_name,
+      lat: parseFloat(s.lat),
+      lon: parseFloat(s.lon),
+    });
+    setOpen(false);
+    setSuggestions([]);
+    setHighlight(-1);
+  };
+
+  const onKey = (e) => {
+    if (!open || suggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlight((h) => Math.min(h + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlight((h) => Math.max(h - 1, -1));
+    } else if (e.key === "Enter" && highlight >= 0) {
+      e.preventDefault();
+      pick(suggestions[highlight]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  const showDropdown =
+    open && (loading || suggestions.length > 0 || (value || "").trim().length >= 2);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <div className="relative">
+        <input
+          type="text"
+          value={value || ""}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKey}
+          placeholder={placeholder || "Try Hyderabad, HITEC City…"}
+          className="tn-input pr-9"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        {loading ? (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full border-2 border-cyan-400/25 border-t-cyan-400 animate-spin" />
+        ) : (
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500">
+            <Icon.Search />
+          </span>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {showDropdown && (
+          <motion.ul
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="tn-autocomplete absolute z-[60] mt-1.5 w-full max-h-72 overflow-auto rounded-xl"
+          >
+            {suggestions.length === 0 ? (
+              <li className="px-3 py-3 text-xs text-slate-500 text-center font-mono">
+                {loading ? "Searching the network…" : "No matches found"}
+              </li>
+            ) : (
+              suggestions.map((s, i) => (
+                <motion.li
+                  key={`${s.place_id}-${i}`}
+                  initial={{ opacity: 0, x: -6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.025, duration: 0.18 }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(s);
+                  }}
+                  onMouseEnter={() => setHighlight(i)}
+                  className={cn(
+                    "px-3 py-2.5 text-sm cursor-pointer flex items-start gap-2 rounded-lg transition-colors",
+                    highlight === i
+                      ? "bg-cyan-400/10 text-white"
+                      : "text-slate-200 hover:bg-white/[0.04]",
+                  )}
+                >
+                  <span className="text-cyan-400 mt-0.5 shrink-0">
+                    <Icon.Pin />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium truncate">
+                      {primaryName(s)}
+                    </span>
+                    {secondaryName(s) && (
+                      <span className="block text-[11px] text-slate-500 truncate font-mono">
+                        {secondaryName(s)}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-slate-600 font-mono shrink-0 mt-0.5">
+                    {parseFloat(s.lat).toFixed(2)}°,{" "}
+                    {parseFloat(s.lon).toFixed(2)}°
+                  </span>
+                </motion.li>
+              ))
+            )}
+            <li className="px-3 pt-1.5 pb-1 text-[9px] text-slate-600 font-mono uppercase tracking-wider text-right">
+              powered by OpenStreetMap · Nominatim
+            </li>
+          </motion.ul>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function PostItemSheet({ open, onClose, currentUser }) {
   const blank = {
     name: "",
@@ -1599,6 +1969,8 @@ function PostItemSheet({ open, onClose, currentUser }) {
     item: "",
     description: "",
     location: "",
+    lat: null,
+    lon: null,
     date: "",
   };
   const [form, setForm] = useState(blank);
@@ -1644,6 +2016,8 @@ function PostItemSheet({ open, onClose, currentUser }) {
         description: form.description,
         location: form.location.toLowerCase(),
         locationOriginal: form.location,
+        lat: typeof form.lat === "number" && Number.isFinite(form.lat) ? form.lat : null,
+        lon: typeof form.lon === "number" && Number.isFinite(form.lon) ? form.lon : null,
         date: form.date,
         category: form.category,
         userId: currentUser ? currentUser.uid : "anonymous",
@@ -1719,7 +2093,48 @@ function PostItemSheet({ open, onClose, currentUser }) {
                   ))}
                 </Field>
                 <Field label="Item Name" v={form.item} onChange={update("item")} placeholder="e.g., AirPods Pro, Student ID" full />
-                <Field label="Location" v={form.location} onChange={update("location")} placeholder="Where it was lost or found" full />
+
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] uppercase tracking-[0.18em] text-slate-400 font-mono mb-1.5">
+                    Location
+                  </label>
+                  <LocationAutocomplete
+                    value={form.location}
+                    onChange={(v) =>
+                      setForm((f) => ({
+                        ...f,
+                        location: v,
+                        // typing again invalidates locked coords
+                        lat: null,
+                        lon: null,
+                      }))
+                    }
+                    onSelect={(sel) =>
+                      setForm((f) => ({
+                        ...f,
+                        location: sel.name,
+                        lat: sel.lat,
+                        lon: sel.lon,
+                      }))
+                    }
+                    placeholder="Try Hyd, HITEC City, JFK Airport…"
+                  />
+                  {Number.isFinite(form.lat) && Number.isFinite(form.lon) ? (
+                    <div className="mt-1.5 inline-flex items-center gap-1.5 text-[10px] font-mono text-cyan-300">
+                      <span className="relative flex w-1.5 h-1.5">
+                        <span className="absolute inset-0 rounded-full bg-cyan-400 animate-ping opacity-70" />
+                        <span className="relative w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                      </span>
+                      Coords locked · {form.lat.toFixed(4)}°,{" "}
+                      {form.lon.toFixed(4)}°
+                    </div>
+                  ) : (
+                    <div className="mt-1.5 text-[10px] font-mono text-slate-500">
+                      Pick a suggestion to attach precise coordinates to this item.
+                    </div>
+                  )}
+                </div>
+
                 <Field label="Description" v={form.description} onChange={update("description")} placeholder="Color, brand, identifying features…" as="textarea" full />
                 <div className="sm:col-span-2">
                   <label className="block text-[10px] uppercase tracking-[0.18em] text-slate-400 font-mono mb-1.5">
