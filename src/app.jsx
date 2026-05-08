@@ -138,6 +138,41 @@ function formatDate(d) {
   });
 }
 
+function formatDistance(meters) {
+  if (meters == null || !Number.isFinite(meters)) return null;
+  if (meters < 100) return `${Math.round(meters)} m`;
+  if (meters < 1000) return `${Math.round(meters / 10) * 10} m`;
+  if (meters < 10000) return `${(meters / 1000).toFixed(2)} km`;
+  if (meters < 100000) return `${(meters / 1000).toFixed(1)} km`;
+  return `${Math.round(meters / 1000)} km`;
+}
+
+// Heuristic 0–100 score derived from existing fields. No new
+// Firestore fields are introduced — pure derivation.
+function computeTrustScore(item, allItems) {
+  if (!item) return 0;
+  let s = 28; // baseline
+  if (item.email) s += 16;
+  if (item.phone) s += 16;
+  if (item.userId && item.userId !== "anonymous") s += 14;
+  if (item.photoData) s += 10;
+  if ((item.description || "").trim().length >= 20) s += 8;
+  if (Number.isFinite(Number(item.lat)) && Number.isFinite(Number(item.lon))) s += 6;
+  if (item.userId && Array.isArray(allItems)) {
+    const posts = allItems.filter((i) => i.userId === item.userId).length;
+    s += Math.min(posts * 2, 10);
+  }
+  return Math.max(0, Math.min(100, Math.round(s)));
+}
+
+function trustLabel(score) {
+  if (score >= 85) return "Verified";
+  if (score >= 70) return "Trusted";
+  if (score >= 50) return "Moderate";
+  if (score >= 30) return "Limited";
+  return "Unvetted";
+}
+
 function tokenize(s) {
   return (s || "").toLowerCase().match(/\w+/g) || [];
 }
@@ -629,34 +664,6 @@ function LiveStats({ items }) {
 
 /* ================== INTERACTIVE MAP ================== */
 
-function buildPopupHtml(item) {
-  const isLost = item.type === "lost";
-  const color = isLost ? "#fb7185" : "#34d399";
-  const cat = item.category || "—";
-  const glyph = CAT_GLYPH[item.category] || "📦";
-  const photoHtml = item.photoData
-    ? `<div class="tn-pop-photo"><img src="${item.photoData}" alt=""/></div>`
-    : `<div class="tn-pop-photo tn-pop-photo-empty" style="--c:${color}"><span>${glyph}</span></div>`;
-  const desc = item.description
-    ? `<div class="tn-pop-desc">${escapeHtml(item.description)}</div>`
-    : "";
-  return `
-    <div class="tn-pop">
-      ${photoHtml}
-      <div class="tn-pop-head">
-        <span class="tn-pop-badge" style="--c:${color}">${isLost ? "Lost" : "Found"}</span>
-        <span class="tn-pop-cat"><span class="tn-pop-glyph">${glyph}</span>${escapeHtml(cat)}</span>
-      </div>
-      <div class="tn-pop-title">${escapeHtml(item.itemOriginal || item.item || "—")}</div>
-      <div class="tn-pop-meta">
-        <div><span>📍</span>${escapeHtml(item.locationOriginal || item.location || "—")}</div>
-        <div><span>📅</span>${escapeHtml(formatDate(item.date))}</div>
-      </div>
-      ${desc}
-    </div>
-  `;
-}
-
 function InteractiveMap({ items }) {
   const mapEl = useRef(null);
   const mapInstance = useRef(null);
@@ -666,6 +673,7 @@ function InteractiveMap({ items }) {
   const markersById = useRef(new Map());
   const [filter, setFilter] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
+  const [cardItem, setCardItem] = useState(null);
   const [scrollZoom, setScrollZoom] = useState(false);
   const [userLocation, setUserLocation] = useState(null); // { coords:[lat,lon], accuracy }
   const [locating, setLocating] = useState(false);
@@ -712,8 +720,11 @@ function InteractiveMap({ items }) {
     markersLayer.current = L.layerGroup().addTo(map);
     mapInstance.current = map;
 
-    // Click on empty map → deselect
-    map.on("click", () => setSelectedId(null));
+    // Click on empty map → deselect and close the card
+    map.on("click", () => {
+      setSelectedId(null);
+      setCardItem(null);
+    });
 
     return () => {
       map.remove();
@@ -777,13 +788,11 @@ function InteractiveMap({ items }) {
         iconAnchor: [17, 17],
       });
       const marker = L.marker([lat, lng], { icon, riseOnHover: true });
-      marker.bindPopup(buildPopupHtml(item), {
-        className: "tn-popup",
-        maxWidth: 280,
-        minWidth: 220,
-        offset: [0, -8],
+      // Click opens the rich React MarkerCard instead of a Leaflet popup
+      marker.on("click", () => {
+        setSelectedId(item.id);
+        setCardItem(item);
       });
-      marker.on("click", () => setSelectedId(item.id));
       marker.addTo(markersLayer.current);
       markersById.current.set(item.id, marker);
     });
@@ -895,12 +904,16 @@ function InteractiveMap({ items }) {
     }
   }, [visibleItems, selectedId, userLocation]);
 
-  // Open the popup of the selected marker
+  // If the selected/cardItem is filtered out (or removed from the
+  // collection), clear it gracefully.
   useEffect(() => {
-    if (!selectedId || !mapInstance.current) return;
-    const m = markersById.current.get(selectedId);
-    if (m) m.openPopup();
-  }, [selectedId]);
+    if (!cardItem) return;
+    const stillVisible = visibleItems.some((i) => i.id === cardItem.id);
+    if (!stillVisible) {
+      setCardItem(null);
+      setSelectedId(null);
+    }
+  }, [visibleItems, cardItem]);
 
   const lostCount = items.filter((i) => i.type === "lost").length;
   const foundCount = items.filter((i) => i.type === "found").length;
@@ -1013,6 +1026,7 @@ function InteractiveMap({ items }) {
               key={o.k}
               onClick={() => {
                 setSelectedId(null);
+                setCardItem(null);
                 setFilter(o.k);
               }}
               className={cn(
@@ -1063,11 +1077,12 @@ function InteractiveMap({ items }) {
           >
             scroll-zoom · {scrollZoom ? "on" : "off"}
           </button>
-          {(selectedId || filter !== "all" || userLocation) && (
+          {(selectedId || filter !== "all" || userLocation || cardItem) && (
             <button
               onClick={() => {
                 setUserLocation(null);
                 setLocError(null);
+                setCardItem(null);
                 handleReset();
               }}
               className="px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-300 hover:text-white transition-colors"
@@ -1159,6 +1174,22 @@ function InteractiveMap({ items }) {
           </div>
         )}
       </div>
+
+      {/* Rich React popup card — fixed-position, lives outside the map div */}
+      <AnimatePresence mode="wait">
+        {cardItem && (
+          <MarkerCard
+            key={cardItem.id}
+            item={cardItem}
+            allItems={items}
+            userLocation={userLocation}
+            onClose={() => {
+              setCardItem(null);
+              setSelectedId(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </section>
   );
 }
@@ -1774,6 +1805,294 @@ function Field({ label, v, onChange, placeholder, type = "text", as = "input", f
         />
       )}
     </div>
+  );
+}
+
+/* ================== MARKER CARD (rich popup) ================== */
+
+const Phone = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.37 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.33 1.85.57 2.81.7a2 2 0 0 1 1.72 2.03Z" />
+  </svg>
+);
+const Compass = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
+  </svg>
+);
+
+function MarkerCard({ item, userLocation, allItems, onClose }) {
+  const isLost = item?.type === "lost";
+  const accent = isLost ? "#fb7185" : "#34d399";
+  const trust = useMemo(() => computeTrustScore(item, allItems), [item, allItems]);
+  const trustL = trustLabel(trust);
+
+  const distance = useMemo(() => {
+    if (!item || !userLocation || !window.L) return null;
+    try {
+      return window.L
+        .latLng(userLocation.coords)
+        .distanceTo(window.L.latLng(itemCoords(item)));
+    } catch {
+      return null;
+    }
+  }, [item, userLocation]);
+
+  const phone = item?.phone || "";
+  const email = item?.email || "";
+  const telHref = phone ? `tel:${phone.replace(/[^\d+]/g, "")}` : null;
+  const mailHref = email
+    ? `mailto:${email}?subject=${encodeURIComponent(
+        `RE: ${item.itemOriginal || item.item || "TraceNet item"}`,
+      )}&body=${encodeURIComponent(
+        `Hi ${item.name || ""},\n\nI'm reaching out via TraceNet AI about the ${
+          isLost ? "item you reported lost" : "item you reported as found"
+        }: "${item.itemOriginal || item.item || ""}".\n\n`,
+      )}`
+    : null;
+
+  const dirHref = useMemo(() => {
+    if (!item) return null;
+    const c = itemCoords(item);
+    if (!c || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return null;
+    const dest = `${c[0].toFixed(6)},${c[1].toFixed(6)}`;
+    const origin = userLocation
+      ? `&origin=${userLocation.coords[0].toFixed(6)},${userLocation.coords[1].toFixed(6)}`
+      : "";
+    return `https://www.google.com/maps/dir/?api=1&destination=${dest}${origin}`;
+  }, [item, userLocation]);
+
+  if (!item) return null;
+  const gradId = `tn-trust-${(item.id || "x").replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const fmtDist = formatDistance(distance);
+
+  return (
+    <motion.div
+      key={item.id}
+      initial={{ opacity: 0, y: 28, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 28, scale: 0.96 }}
+      transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+      style={{ "--accent": accent }}
+      className="tn-marker-card fixed z-[55] inset-x-2 bottom-2 sm:inset-x-auto sm:bottom-6 sm:right-6 sm:w-[380px] max-h-[85vh] flex flex-col rounded-3xl overflow-hidden"
+      role="dialog"
+      aria-label={`Details for ${item.itemOriginal || item.item || "item"}`}
+    >
+      <div className="tn-marker-card-inner flex flex-col min-h-0">
+        {/* Photo header */}
+        <div className="relative h-36 shrink-0 overflow-hidden">
+          {item.photoData ? (
+            <img
+              src={item.photoData}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div
+              className="w-full h-full flex items-center justify-center text-6xl"
+              style={{
+                background: `linear-gradient(135deg, ${accent}30, rgba(8,10,22,0.7))`,
+              }}
+            >
+              <span style={{ opacity: 0.55 }}>
+                {CAT_GLYPH[item.category] || "📦"}
+              </span>
+            </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-[#0a0c1a] via-[#0a0c1a]/40 to-transparent" />
+          <div className="absolute top-3 left-3 flex items-center gap-1.5">
+            <span
+              className="px-2.5 py-1 rounded-md text-[10px] font-mono font-bold uppercase tracking-[0.14em] border"
+              style={{
+                background: `${accent}26`,
+                color: accent,
+                borderColor: `${accent}55`,
+                boxShadow: `0 0 14px ${accent}55`,
+              }}
+            >
+              {item.type || "—"}
+            </span>
+            {item.category && (
+              <span className="px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.12em] bg-black/55 backdrop-blur text-slate-200 border border-white/[0.08]">
+                {item.category}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="absolute top-3 right-3 w-8 h-8 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] flex items-center justify-center text-slate-300 hover:text-white hover:bg-black/80 transition-colors"
+            aria-label="Close"
+          >
+            <Icon.X />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 pt-4 pb-2">
+          {/* Name + Trust ring */}
+          <div className="flex items-start gap-3 mb-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.2em] font-mono text-slate-500 mb-1">
+                {isLost ? "Reported by" : "Found by"}
+              </div>
+              <div className="text-lg font-semibold text-slate-50 truncate">
+                {item.name || "Anonymous"}
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                {formatDate(item.date)}
+              </div>
+            </div>
+            <div className="relative w-16 h-16 shrink-0">
+              <svg className="w-16 h-16 -rotate-90" viewBox="0 0 36 36">
+                <circle
+                  cx="18"
+                  cy="18"
+                  r="16"
+                  fill="none"
+                  stroke="rgba(255,255,255,0.06)"
+                  strokeWidth="2.5"
+                />
+                <circle
+                  cx="18"
+                  cy="18"
+                  r="16"
+                  fill="none"
+                  stroke={`url(#${gradId})`}
+                  strokeWidth="2.5"
+                  strokeDasharray={`${((trust * 100.53) / 100).toFixed(2)} 100.53`}
+                  strokeLinecap="round"
+                />
+                <defs>
+                  <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="#22d3ee" />
+                    <stop offset="100%" stopColor="#a855f7" />
+                  </linearGradient>
+                </defs>
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-base font-mono font-bold text-slate-100 tabular-nums leading-none">
+                  {trust}
+                </span>
+                <span className="text-[8px] font-mono text-cyan-300 mt-0.5 uppercase tracking-[0.12em]">
+                  trust
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-white/[0.025] border border-white/[0.06] p-3 mb-3">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-mono text-slate-500 mb-1 flex items-center justify-between">
+              <span>Item</span>
+              <span className="text-cyan-300">{trustL}</span>
+            </div>
+            <div className="text-sm font-semibold text-slate-100">
+              {item.itemOriginal || item.item || "—"}
+            </div>
+            {item.description && (
+              <p className="text-[12.5px] text-slate-400 mt-1.5 leading-relaxed tn-line-clamp-3">
+                {item.description}
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <div className="rounded-xl bg-white/[0.025] border border-white/[0.06] p-3">
+              <div className="text-[10px] uppercase tracking-[0.16em] font-mono text-slate-500 mb-1 flex items-center gap-1">
+                <Icon.Pin />
+                Location
+              </div>
+              <div className="text-[12.5px] text-slate-200 font-medium tn-line-clamp-2 leading-snug">
+                {item.locationOriginal || item.location || "—"}
+              </div>
+            </div>
+            <div className="rounded-xl bg-white/[0.025] border border-white/[0.06] p-3">
+              <div className="text-[10px] uppercase tracking-[0.16em] font-mono text-slate-500 mb-1 flex items-center gap-1">
+                <Icon.Activity />
+                Distance
+              </div>
+              <div className="text-[12.5px] text-slate-200 font-medium font-mono tabular-nums">
+                {fmtDist || (
+                  <span className="text-slate-500 normal-case">
+                    locate me first
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {(phone || email) && (
+            <div className="space-y-1.5 mb-2">
+              {phone && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.025] border border-white/[0.06]">
+                  <span className="text-emerald-300/80 shrink-0"><Phone /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[9.5px] uppercase tracking-[0.16em] font-mono text-slate-500">
+                      Phone
+                    </div>
+                    <div className="text-[12.5px] text-slate-100 font-mono truncate">
+                      {phone}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {email && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.025] border border-white/[0.06]">
+                  <span className="text-cyan-300/80 shrink-0"><Icon.Mail /></span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[9.5px] uppercase tracking-[0.16em] font-mono text-slate-500">
+                      Email
+                    </div>
+                    <div className="text-[12.5px] text-slate-100 font-mono truncate">
+                      {email}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Action bar */}
+        <div className="shrink-0 px-4 py-3 border-t border-white/[0.06] bg-gradient-to-t from-[#0a0c1a] via-[#0a0c1a]/95 to-[#0a0c1a]/80 grid grid-cols-3 gap-2">
+          <a
+            href={telHref || undefined}
+            onClick={(e) => !telHref && e.preventDefault()}
+            aria-disabled={!telHref}
+            className={cn("tn-action-btn", !telHref && "tn-action-disabled")}
+            style={{ "--c": "#34d399" }}
+          >
+            <span className="tn-action-glow" />
+            <span className="tn-action-icon"><Phone /></span>
+            <span className="tn-action-label">Call</span>
+          </a>
+          <a
+            href={mailHref || undefined}
+            onClick={(e) => !mailHref && e.preventDefault()}
+            aria-disabled={!mailHref}
+            className={cn("tn-action-btn", !mailHref && "tn-action-disabled")}
+            style={{ "--c": "#22d3ee" }}
+          >
+            <span className="tn-action-glow" />
+            <span className="tn-action-icon"><Icon.Mail /></span>
+            <span className="tn-action-label">Email</span>
+          </a>
+          <a
+            href={dirHref || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => !dirHref && e.preventDefault()}
+            aria-disabled={!dirHref}
+            className={cn("tn-action-btn", !dirHref && "tn-action-disabled")}
+            style={{ "--c": "#a855f7" }}
+          >
+            <span className="tn-action-glow" />
+            <span className="tn-action-icon"><Compass /></span>
+            <span className="tn-action-label">Directions</span>
+          </a>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 

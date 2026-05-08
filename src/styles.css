@@ -462,6 +462,116 @@ select.tn-input {
   100% { transform: scale(2.6); opacity: 0; }
 }
 
+/* ----- Marker card (rich React popup) -------------------------- */
+.tn-marker-card {
+  /* Outer glow + accent gradient border */
+  filter: drop-shadow(0 24px 60px rgba(0, 0, 0, 0.7))
+    drop-shadow(0 0 32px color-mix(in srgb, var(--accent, #22d3ee) 28%, transparent));
+}
+.tn-marker-card-inner {
+  position: relative;
+  background: linear-gradient(180deg, rgba(15, 18, 38, 0.96), rgba(8, 10, 22, 0.97));
+  border: 1px solid color-mix(in srgb, var(--accent, #22d3ee) 28%, rgba(120, 140, 255, 0.18));
+  border-radius: 24px;
+  overflow: hidden;
+  max-height: inherit;
+  isolation: isolate;
+}
+.tn-marker-card-inner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent, #22d3ee) 70%, transparent),
+    transparent 45%,
+    color-mix(in srgb, var(--accent, #22d3ee) 35%, transparent)
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.85;
+  z-index: 0;
+}
+.tn-marker-card-inner > * { position: relative; z-index: 1; }
+
+/* Subtle scrolling area inside card */
+.tn-marker-card-inner ::-webkit-scrollbar { width: 6px; }
+.tn-marker-card-inner ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.45), rgba(168, 85, 247, 0.45));
+  border-radius: 999px;
+}
+
+/* Action buttons (Call / Email / Directions) */
+.tn-action-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 11px 8px;
+  border-radius: 14px;
+  background: rgba(15, 18, 38, 0.55);
+  border: 1px solid color-mix(in srgb, var(--c, #22d3ee) 25%, rgba(120, 140, 255, 0.14));
+  color: #e2e8f0;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
+  overflow: hidden;
+  isolation: isolate;
+}
+.tn-action-btn:hover {
+  background: color-mix(in srgb, var(--c, #22d3ee) 14%, rgba(15, 18, 38, 0.7));
+  border-color: var(--c, #22d3ee);
+  box-shadow:
+    0 0 22px color-mix(in srgb, var(--c, #22d3ee) 40%, transparent),
+    0 8px 18px rgba(0, 0, 0, 0.5);
+  transform: translateY(-1px);
+  color: #fff;
+}
+.tn-action-btn:active {
+  transform: translateY(0);
+}
+.tn-action-icon {
+  color: var(--c, #22d3ee);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--c, #22d3ee) 70%, transparent));
+}
+.tn-action-label {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: rgba(226, 232, 240, 0.88);
+  font-weight: 600;
+}
+.tn-action-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 110%,
+    color-mix(in srgb, var(--c, #22d3ee) 60%, transparent),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: -1;
+}
+.tn-action-btn:hover .tn-action-glow { opacity: 0.7; }
+.tn-action-disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 /* ----- Location autocomplete dropdown -------------------------- */
 .tn-autocomplete {
   background: rgba(11, 13, 28, 0.96);
