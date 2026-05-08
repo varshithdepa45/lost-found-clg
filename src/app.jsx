@@ -25,8 +25,12 @@ import {
   addDoc,
   deleteDoc,
   doc,
+  updateDoc,
   serverTimestamp,
   onSnapshot,
+  query,
+  where,
+  orderBy,
 } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import {
   getAuth,
@@ -51,6 +55,186 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 const auth = getAuth(fbApp);
+
+/* ================== CLAIMS + CHAT (Firestore) ================== */
+
+// claims/{id}                      — top-level claim doc
+// claims/{id}/messages/{id}        — messages subcollection
+//
+// A claim represents an "I think this item is mine" request from a
+// claimant against an item-poster (the finder). Messaging only opens
+// after the owner approves the claim.
+
+function tsToMillis(ts) {
+  if (!ts) return 0;
+  if (typeof ts === "number") return ts;
+  if (ts.seconds != null) return ts.seconds * 1000;
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+function formatTime(ts) {
+  const ms = tsToMillis(ts);
+  if (!ms) return "";
+  const d = new Date(ms);
+  const today = new Date();
+  const sameDay =
+    d.getDate() === today.getDate() &&
+    d.getMonth() === today.getMonth() &&
+    d.getFullYear() === today.getFullYear();
+  if (sameDay) {
+    return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function displayNameOf(user) {
+  return (
+    user?.displayName ||
+    (user?.email ? user.email.split("@")[0] : null) ||
+    "User"
+  );
+}
+
+async function createClaim({ item, currentUser, note }) {
+  if (!currentUser) throw new Error("Sign in to claim an item.");
+  if (!item) throw new Error("No item provided.");
+  if (item.userId && item.userId === currentUser.uid)
+    throw new Error("You can't claim your own post.");
+
+  const payload = {
+    itemId: item.id,
+    itemTitle: item.itemOriginal || item.item || "Untitled item",
+    itemType: item.type || "found",
+    ownerUid: item.userId || "anonymous",
+    ownerName: item.name || "Owner",
+    ownerEmail: item.email || "",
+    claimantUid: currentUser.uid,
+    claimantName: displayNameOf(currentUser),
+    claimantEmail: currentUser.email || "",
+    participants: [item.userId || "anonymous", currentUser.uid],
+    status: "pending",
+    note: (note || "").slice(0, 280),
+    createdAt: serverTimestamp(),
+    lastMessageAt: null,
+    lastMessageText: "",
+    lastMessageBy: "",
+  };
+  const ref = await addDoc(collection(db, "claims"), payload);
+  return ref.id;
+}
+
+async function setClaimStatus(claimId, status) {
+  await updateDoc(doc(db, "claims", claimId), {
+    status,
+    decidedAt: serverTimestamp(),
+  });
+}
+
+async function sendChatMessage({ claimId, currentUser, text }) {
+  const trimmed = (text || "").trim();
+  if (!trimmed || !currentUser || !claimId) return;
+  const senderName = displayNameOf(currentUser);
+  await addDoc(collection(db, "claims", claimId, "messages"), {
+    text: trimmed.slice(0, 2000),
+    senderUid: currentUser.uid,
+    senderName,
+    createdAt: serverTimestamp(),
+  });
+  // Mirror the latest message onto the parent claim so inbox previews
+  // and unread detection don't need to fan-out reads on every render.
+  await updateDoc(doc(db, "claims", claimId), {
+    lastMessageAt: serverTimestamp(),
+    lastMessageText: trimmed.slice(0, 140),
+    lastMessageBy: currentUser.uid,
+  });
+}
+
+// ----- Unread tracking (per-browser, no extra writes) -------------
+const SEEN_KEY = "tn-claim-seen";
+function readSeen() {
+  try {
+    return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+function markSeen(claimId) {
+  if (!claimId) return;
+  const seen = readSeen();
+  seen[claimId] = Date.now();
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+  } catch {}
+}
+function claimIsUnread(claim, currentUid, seenMap) {
+  if (!claim || !currentUid) return false;
+  if (!claim.lastMessageAt) return false;
+  if (claim.lastMessageBy === currentUid) return false;
+  const seenAt = seenMap[claim.id] || 0;
+  return tsToMillis(claim.lastMessageAt) > seenAt;
+}
+
+// ----- Hooks ------------------------------------------------------
+function useClaims(user) {
+  const [claims, setClaims] = useState([]);
+  useEffect(() => {
+    if (!user) {
+      setClaims([]);
+      return;
+    }
+    const q = query(
+      collection(db, "claims"),
+      where("participants", "array-contains", user.uid),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        list.sort(
+          (a, b) =>
+            tsToMillis(b.lastMessageAt || b.createdAt) -
+            tsToMillis(a.lastMessageAt || a.createdAt),
+        );
+        setClaims(list);
+      },
+      (err) => console.error("claims snapshot:", err),
+    );
+    return () => unsub();
+  }, [user]);
+  return claims;
+}
+
+function useChatMessages(claimId) {
+  const [msgs, setMsgs] = useState([]);
+  useEffect(() => {
+    if (!claimId) {
+      setMsgs([]);
+      return;
+    }
+    const q = query(
+      collection(db, "claims", claimId, "messages"),
+      orderBy("createdAt", "asc"),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        setMsgs(list);
+      },
+      (err) => console.error("messages snapshot:", err),
+    );
+    return () => unsub();
+  }, [claimId]);
+  return msgs;
+}
 
 /* ================== CONSTANTS ================== */
 
@@ -412,6 +596,9 @@ function TopNavbar({
   onShowAll,
   viewingMyPosts,
   onPostItem,
+  onOpenInbox,
+  inboxCount,
+  inboxUnread,
 }) {
   return (
     <motion.nav
@@ -444,6 +631,30 @@ function TopNavbar({
             </span>
             <span className="font-mono">NETWORK ONLINE</span>
           </div>
+
+          {user && (
+            <button
+              onClick={onOpenInbox}
+              className="relative tn-btn tn-btn-ghost px-2.5"
+              title="Claims & messages"
+              aria-label="Open claims inbox"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+              </svg>
+              {inboxCount > 0 && (
+                <span className="ml-1 text-[10px] font-mono text-slate-400 tabular-nums">
+                  {inboxCount}
+                </span>
+              )}
+              {inboxUnread > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-cyan-400 text-[10px] font-mono font-bold text-slate-950 flex items-center justify-center shadow-[0_0_10px_rgba(34,211,238,0.7)]">
+                  {inboxUnread > 9 ? "9+" : inboxUnread}
+                </span>
+              )}
+            </button>
+          )}
 
           {user ? (
             <>
@@ -664,7 +875,15 @@ function LiveStats({ items }) {
 
 /* ================== INTERACTIVE MAP ================== */
 
-function InteractiveMap({ items }) {
+function InteractiveMap({
+  items,
+  currentUser,
+  claims = [],
+  claimBusy,
+  onClaim,
+  onOpenChat,
+  onRequireSignIn,
+}) {
   const mapEl = useRef(null);
   const mapInstance = useRef(null);
   const markersLayer = useRef(null);
@@ -1183,6 +1402,20 @@ function InteractiveMap({ items }) {
             item={cardItem}
             allItems={items}
             userLocation={userLocation}
+            currentUser={currentUser}
+            myClaim={
+              currentUser
+                ? claims.find(
+                    (c) =>
+                      c.itemId === cardItem.id &&
+                      c.claimantUid === currentUser.uid,
+                  )
+                : null
+            }
+            claimBusy={claimBusy}
+            onClaim={onClaim}
+            onOpenChat={onOpenChat}
+            onRequireSignIn={onRequireSignIn}
             onClose={() => {
               setCardItem(null);
               setSelectedId(null);
@@ -1808,6 +2041,505 @@ function Field({ label, v, onChange, placeholder, type = "text", as = "input", f
   );
 }
 
+/* ================== CHAT MODAL ================== */
+
+function ChatModal({ claim, currentUser, onClose }) {
+  const messages = useChatMessages(claim?.id);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState("");
+  const scrollRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, claim?.id]);
+
+  // Mark seen when chat is open / new messages arrive
+  useEffect(() => {
+    if (claim?.id) markSeen(claim.id);
+  }, [claim?.id, messages.length]);
+
+  // Focus the input when opened
+  useEffect(() => {
+    if (claim && inputRef.current) {
+      const t = setTimeout(() => inputRef.current?.focus(), 120);
+      return () => clearTimeout(t);
+    }
+  }, [claim?.id]);
+
+  const peerName = useMemo(() => {
+    if (!claim || !currentUser) return "—";
+    return claim.ownerUid === currentUser.uid
+      ? claim.claimantName || "Claimant"
+      : claim.ownerName || "Owner";
+  }, [claim, currentUser]);
+
+  const handleSend = async () => {
+    setErr("");
+    const t = text.trim();
+    if (!t || !currentUser || !claim) return;
+    setSending(true);
+    try {
+      await sendChatMessage({
+        claimId: claim.id,
+        currentUser,
+        text: t,
+      });
+      setText("");
+    } catch (e) {
+      setErr(e.message || "Failed to send.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {claim && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-sm"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ y: 28, opacity: 0, scale: 0.97 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            exit={{ y: 28, opacity: 0, scale: 0.97 }}
+            transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+            onClick={(e) => e.stopPropagation()}
+            className="tn-chat tn-glass-strong w-full max-w-md rounded-3xl flex flex-col max-h-[88vh] sm:max-h-[78vh] relative overflow-hidden"
+          >
+            <div className="pointer-events-none absolute inset-0 rounded-3xl tn-grad-border opacity-70" />
+
+            {/* Header */}
+            <div className="relative flex items-center gap-3 px-5 py-4 border-b border-white/[0.06]">
+              <div className="w-10 h-10 rounded-xl shrink-0 flex items-center justify-center bg-gradient-to-br from-cyan-500/30 to-purple-500/30 border border-cyan-400/30 text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.3)]">
+                <Icon.Brain />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] uppercase tracking-[0.18em] font-mono text-cyan-300 mb-0.5">
+                  Secure thread · claim {claim.id?.slice(0, 6)}
+                </div>
+                <div className="text-base font-semibold text-slate-100 truncate">
+                  {peerName}
+                </div>
+                <div className="text-[11px] text-slate-500 font-mono truncate">
+                  re: {claim.itemTitle || "—"}
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                className="w-8 h-8 rounded-lg bg-black/40 backdrop-blur border border-white/[0.08] flex items-center justify-center text-slate-300 hover:text-white"
+                aria-label="Close chat"
+              >
+                <Icon.X />
+              </button>
+            </div>
+
+            {/* Messages */}
+            <div
+              ref={scrollRef}
+              className="relative flex-1 overflow-y-auto px-4 py-4 space-y-2"
+            >
+              {messages.length === 0 ? (
+                <div className="h-full min-h-[180px] flex flex-col items-center justify-center text-center px-6 text-slate-500">
+                  <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-white/[0.03] border border-white/[0.06] mb-3 text-slate-400">
+                    <Icon.Sparkles />
+                  </div>
+                  <p className="text-sm text-slate-300 font-medium">
+                    Say hi to {peerName}
+                  </p>
+                  <p className="text-xs mt-1">
+                    Both of you can now coordinate the handoff.
+                  </p>
+                </div>
+              ) : (
+                messages.map((m, i) => {
+                  const mine = m.senderUid === currentUser?.uid;
+                  const prev = messages[i - 1];
+                  const sameAuthor =
+                    prev && prev.senderUid === m.senderUid &&
+                    Math.abs(tsToMillis(m.createdAt) - tsToMillis(prev.createdAt)) < 5 * 60 * 1000;
+                  return (
+                    <div
+                      key={m.id}
+                      className={cn(
+                        "flex flex-col",
+                        mine ? "items-end" : "items-start",
+                      )}
+                    >
+                      {!sameAuthor && (
+                        <div
+                          className={cn(
+                            "text-[9.5px] font-mono uppercase tracking-[0.16em] mb-1 px-1",
+                            mine ? "text-cyan-300/80" : "text-slate-500",
+                          )}
+                        >
+                          {mine ? "You" : m.senderName || "User"}
+                        </div>
+                      )}
+                      <div
+                        className={cn(
+                          "tn-bubble max-w-[80%] px-3 py-2 text-[13.5px] leading-relaxed",
+                          mine ? "tn-bubble-mine" : "tn-bubble-theirs",
+                        )}
+                      >
+                        <div className="whitespace-pre-wrap break-words">
+                          {m.text}
+                        </div>
+                        <div
+                          className={cn(
+                            "text-[9.5px] font-mono mt-1 tabular-nums",
+                            mine ? "text-cyan-50/70" : "text-slate-500",
+                          )}
+                        >
+                          {formatTime(m.createdAt)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Composer */}
+            <div className="relative px-3 sm:px-4 py-3 border-t border-white/[0.06] bg-[#0a0c1a]/70 backdrop-blur">
+              {err && (
+                <div className="mb-2 px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300">
+                  {err}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  placeholder="Type a message…"
+                  className="tn-input"
+                  disabled={!currentUser || sending}
+                  maxLength={2000}
+                />
+                <button
+                  onClick={handleSend}
+                  disabled={!text.trim() || !currentUser || sending}
+                  className="tn-btn tn-btn-primary px-4 py-2.5 text-sm shrink-0"
+                  title="Send"
+                >
+                  <Icon.Bolt />
+                  <span className="hidden sm:inline">
+                    {sending ? "Sending…" : "Send"}
+                  </span>
+                </button>
+              </div>
+              <div className="mt-1.5 text-[9.5px] font-mono text-slate-600 uppercase tracking-wider">
+                Encrypted in transit · stored on Firebase
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/* ================== CLAIMS PANEL ================== */
+
+function ClaimRow({ claim, currentUser, isUnread, onApprove, onReject, onOpenChat, busy }) {
+  const isOwner = claim.ownerUid === currentUser?.uid;
+  const isClaimant = claim.claimantUid === currentUser?.uid;
+  const peer = isOwner ? claim.claimantName : claim.ownerName;
+  const status = claim.status || "pending";
+  const statusColor =
+    status === "approved" ? "#34d399" : status === "rejected" ? "#fb7185" : "#fbbf24";
+  const created = formatTime(claim.createdAt);
+  const last = claim.lastMessageAt ? formatTime(claim.lastMessageAt) : created;
+
+  return (
+    <div className="relative tn-glass rounded-2xl p-3 hover:border-cyan-400/30 transition-colors">
+      {isUnread && (
+        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.9)]">
+          <span className="absolute inset-0 rounded-full bg-cyan-400 animate-ping opacity-70" />
+        </span>
+      )}
+      <div className="flex items-start gap-3">
+        <div
+          className="w-9 h-9 rounded-lg shrink-0 flex items-center justify-center text-xs font-mono"
+          style={{
+            background: `${statusColor}1f`,
+            color: statusColor,
+            border: `1px solid ${statusColor}55`,
+            boxShadow: `0 0 10px ${statusColor}30`,
+          }}
+        >
+          {status === "approved" ? "✓" : status === "rejected" ? "✗" : "•"}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline justify-between gap-2">
+            <div className="text-sm font-semibold text-slate-100 truncate">
+              {peer || "Unknown"}
+            </div>
+            <div className="text-[10px] font-mono text-slate-500 shrink-0">
+              {last}
+            </div>
+          </div>
+          <div className="text-[12px] text-slate-400 truncate">
+            re:{" "}
+            <span className="text-slate-300">{claim.itemTitle || "—"}</span>
+          </div>
+          {claim.lastMessageText ? (
+            <div className="text-[12px] text-slate-500 truncate mt-0.5">
+              {claim.lastMessageBy === currentUser?.uid ? "You: " : ""}
+              {claim.lastMessageText}
+            </div>
+          ) : claim.note ? (
+            <div className="text-[12px] text-slate-500 italic truncate mt-0.5">
+              "{claim.note}"
+            </div>
+          ) : null}
+
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <span
+              className="px-2 py-0.5 rounded-md text-[9.5px] font-mono uppercase tracking-[0.12em]"
+              style={{
+                background: `${statusColor}1a`,
+                color: statusColor,
+                border: `1px solid ${statusColor}40`,
+              }}
+            >
+              {status}
+            </span>
+            <span className="px-2 py-0.5 rounded-md text-[9.5px] font-mono uppercase tracking-[0.12em] bg-white/[0.04] border border-white/[0.06] text-slate-400">
+              {isOwner ? "you · finder" : "you · claimant"}
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              {status === "pending" && isOwner && (
+                <>
+                  <button
+                    onClick={() => onReject(claim)}
+                    disabled={busy}
+                    className="tn-btn tn-btn-ghost text-[11px] px-2.5 py-1 disabled:opacity-50"
+                    title="Reject"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    onClick={() => onApprove(claim)}
+                    disabled={busy}
+                    className="tn-btn tn-btn-primary text-[11px] px-2.5 py-1 disabled:opacity-60"
+                    title="Approve"
+                  >
+                    Approve
+                  </button>
+                </>
+              )}
+              {status === "approved" && (
+                <button
+                  onClick={() => onOpenChat(claim)}
+                  className="tn-btn tn-btn-primary text-[11px] px-2.5 py-1"
+                >
+                  Open chat
+                </button>
+              )}
+              {status === "rejected" && isClaimant && (
+                <span className="text-[10px] text-slate-500 font-mono">
+                  No reply available
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClaimsPanel({
+  open,
+  onClose,
+  claims,
+  currentUser,
+  onOpenChat,
+}) {
+  const [tab, setTab] = useState("inbox"); // 'inbox' | 'mine'
+  const [busyId, setBusyId] = useState(null);
+  const [seenTick, setSeenTick] = useState(0);
+
+  const seen = useMemo(() => readSeen(), [seenTick, claims]);
+
+  const inbox = useMemo(
+    () =>
+      claims.filter(
+        (c) => c.ownerUid === currentUser?.uid && c.claimantUid !== currentUser?.uid,
+      ),
+    [claims, currentUser],
+  );
+  const mine = useMemo(
+    () =>
+      claims.filter(
+        (c) => c.claimantUid === currentUser?.uid && c.ownerUid !== currentUser?.uid,
+      ),
+    [claims, currentUser],
+  );
+
+  const list = tab === "inbox" ? inbox : mine;
+  const inboxUnread = inbox.filter((c) =>
+    claimIsUnread(c, currentUser?.uid, seen),
+  ).length;
+  const mineUnread = mine.filter((c) =>
+    claimIsUnread(c, currentUser?.uid, seen),
+  ).length;
+
+  const handleApprove = async (claim) => {
+    setBusyId(claim.id);
+    try {
+      await setClaimStatus(claim.id, "approved");
+    } catch (e) {
+      alert("Approve failed: " + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const handleReject = async (claim) => {
+    setBusyId(claim.id);
+    try {
+      await setClaimStatus(claim.id, "rejected");
+    } catch (e) {
+      alert("Reject failed: " + e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleOpen = (claim) => {
+    markSeen(claim.id);
+    setSeenTick((t) => t + 1);
+    onOpenChat(claim);
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[58]"
+          />
+          <motion.aside
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", damping: 30, stiffness: 240 }}
+            className="fixed top-0 right-0 bottom-0 w-full sm:w-[440px] z-[59] overflow-y-auto"
+          >
+            <div className="tn-glass-strong h-full p-5 sm:p-6 border-l border-white/[0.08]">
+              <div className="flex items-start justify-between mb-5">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-400 font-mono mb-1">
+                    Inbox · Claims
+                  </div>
+                  <h2 className="text-2xl font-semibold tracking-tight">
+                    Conversations
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Approve a claim to open a secure thread.
+                  </p>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="tn-btn tn-btn-ghost p-2 -mr-1 rounded-lg"
+                  aria-label="Close"
+                >
+                  <Icon.X />
+                </button>
+              </div>
+
+              <div className="flex p-1 mb-4 rounded-xl bg-white/[0.04] border border-white/[0.06] text-sm font-medium">
+                {[
+                  { k: "inbox", label: "Incoming", count: inbox.length, unread: inboxUnread },
+                  { k: "mine", label: "My claims", count: mine.length, unread: mineUnread },
+                ].map((t) => (
+                  <button
+                    key={t.k}
+                    onClick={() => setTab(t.k)}
+                    className={cn(
+                      "relative flex-1 py-2 rounded-lg transition-all flex items-center justify-center gap-1.5",
+                      tab === t.k
+                        ? "bg-gradient-to-br from-cyan-500/25 to-purple-500/25 text-white shadow-[0_0_18px_rgba(34,211,238,0.18)] border border-white/[0.08]"
+                        : "text-slate-400 hover:text-slate-200",
+                    )}
+                  >
+                    {t.label}
+                    <span className="text-[10px] font-mono text-slate-500">
+                      {t.count}
+                    </span>
+                    {t.unread > 0 && (
+                      <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-cyan-400 text-[9px] font-mono font-bold text-slate-950">
+                        {t.unread}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {!currentUser ? (
+                <div className="tn-glass rounded-2xl p-8 text-center">
+                  <p className="text-sm text-slate-300">
+                    Sign in to see your claims.
+                  </p>
+                </div>
+              ) : list.length === 0 ? (
+                <div className="tn-glass rounded-2xl p-8 text-center">
+                  <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-white/[0.03] border border-white/[0.06] mb-3 text-slate-500">
+                    <Icon.Mail />
+                  </div>
+                  <p className="text-slate-200 text-sm font-medium">
+                    {tab === "inbox" ? "No incoming claims yet" : "You haven't claimed anything"}
+                  </p>
+                  <p className="text-slate-500 text-xs mt-1">
+                    {tab === "inbox"
+                      ? "When someone claims one of your reports, it'll show here."
+                      : "Open the map and tap a Found item to claim it."}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {list.map((c) => (
+                    <ClaimRow
+                      key={c.id}
+                      claim={c}
+                      currentUser={currentUser}
+                      isUnread={claimIsUnread(c, currentUser.uid, seen)}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                      onOpenChat={handleOpen}
+                      busy={busyId === c.id}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.aside>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
 /* ================== MARKER CARD (rich popup) ================== */
 
 const Phone = () => (
@@ -1822,7 +2554,18 @@ const Compass = () => (
   </svg>
 );
 
-function MarkerCard({ item, userLocation, allItems, onClose }) {
+function MarkerCard({
+  item,
+  userLocation,
+  allItems,
+  onClose,
+  currentUser,
+  myClaim,
+  claimBusy,
+  onClaim,
+  onOpenChat,
+  onRequireSignIn,
+}) {
   const isLost = item?.type === "lost";
   const accent = isLost ? "#fb7185" : "#34d399";
   const trust = useMemo(() => computeTrustScore(item, allItems), [item, allItems]);
@@ -2052,6 +2795,73 @@ function MarkerCard({ item, userLocation, allItems, onClose }) {
             </div>
           )}
         </div>
+
+        {/* Claim / chat CTA — only when relevant */}
+        {item.type === "found" &&
+          (currentUser ? item.userId !== currentUser.uid : true) && (
+            <div className="px-4 pb-3">
+              {myClaim ? (
+                <div
+                  className={cn(
+                    "rounded-xl p-3 border text-[12px] font-mono flex items-center gap-2",
+                    myClaim.status === "approved"
+                      ? "bg-emerald-400/10 border-emerald-400/30 text-emerald-200"
+                      : myClaim.status === "rejected"
+                        ? "bg-rose-500/10 border-rose-500/30 text-rose-200"
+                        : "bg-amber-400/10 border-amber-400/30 text-amber-200",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "w-2 h-2 rounded-full shrink-0",
+                      myClaim.status === "approved"
+                        ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]"
+                        : myClaim.status === "rejected"
+                          ? "bg-rose-400"
+                          : "bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.7)]",
+                    )}
+                  />
+                  <span className="flex-1 uppercase tracking-[0.12em]">
+                    {myClaim.status === "approved"
+                      ? "Claim approved"
+                      : myClaim.status === "rejected"
+                        ? "Claim rejected"
+                        : "Claim awaiting approval"}
+                  </span>
+                  {myClaim.status === "approved" && (
+                    <button
+                      onClick={() => onOpenChat?.(myClaim)}
+                      className="tn-btn tn-btn-primary text-[11px] px-3 py-1"
+                    >
+                      <Icon.Mail />
+                      Open chat
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    if (!currentUser) return onRequireSignIn?.();
+                    onClaim?.(item);
+                  }}
+                  disabled={claimBusy}
+                  className="tn-claim-cta w-full"
+                  style={{ "--c": "#a855f7" }}
+                  title="Notify the finder you'd like to claim this"
+                >
+                  <span className="tn-claim-glow" />
+                  <Icon.Sparkles />
+                  <span>
+                    {claimBusy
+                      ? "Submitting…"
+                      : currentUser
+                        ? "Claim this item"
+                        : "Sign in to claim"}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
 
         {/* Action bar */}
         <div className="shrink-0 px-4 py-3 border-t border-white/[0.06] bg-gradient-to-t from-[#0a0c1a] via-[#0a0c1a]/95 to-[#0a0c1a]/80 grid grid-cols-3 gap-2">
@@ -2766,6 +3576,74 @@ function App() {
   const [contactItem, setContactItem] = useState(null);
   const [viewingMyPosts, setViewingMyPosts] = useState(false);
 
+  // Claims + chat
+  const claims = useClaims(user);
+  const [claimsPanelOpen, setClaimsPanelOpen] = useState(false);
+  const [chatClaim, setChatClaim] = useState(null);
+  const [claimBusy, setClaimBusy] = useState(false);
+  const [seenTick, setSeenTick] = useState(0);
+
+  const inboxUnread = useMemo(() => {
+    if (!user) return 0;
+    const seen = readSeen();
+    return claims.reduce(
+      (n, c) => n + (claimIsUnread(c, user.uid, seen) ? 1 : 0),
+      0,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claims, user, seenTick]);
+
+  const inboxCount = useMemo(
+    () =>
+      claims.filter(
+        (c) =>
+          (c.ownerUid === user?.uid &&
+            c.status === "pending" &&
+            c.claimantUid !== user?.uid) ||
+          c.status === "approved",
+      ).length,
+    [claims, user],
+  );
+
+  const handleCreateClaim = useCallback(
+    async (item) => {
+      if (!user) {
+        setAuthOpen(true);
+        return;
+      }
+      setClaimBusy(true);
+      try {
+        await createClaim({ item, currentUser: user });
+      } catch (e) {
+        alert(e.message || "Failed to submit claim.");
+      } finally {
+        setClaimBusy(false);
+      }
+    },
+    [user],
+  );
+
+  const handleOpenChat = useCallback((claim) => {
+    setChatClaim(claim);
+    setClaimsPanelOpen(false);
+    markSeen(claim.id);
+    setSeenTick((t) => t + 1);
+  }, []);
+
+  const handleCloseChat = useCallback(() => {
+    if (chatClaim) markSeen(chatClaim.id);
+    setSeenTick((t) => t + 1);
+    setChatClaim(null);
+  }, [chatClaim]);
+
+  // Keep chatClaim in sync with the latest snapshot (so unread/last-message
+  // values refresh while the chat is open).
+  useEffect(() => {
+    if (!chatClaim) return;
+    const fresh = claims.find((c) => c.id === chatClaim.id);
+    if (fresh && fresh !== chatClaim) setChatClaim(fresh);
+  }, [claims, chatClaim]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
@@ -2820,10 +3698,21 @@ function App() {
         }
         onShowAll={() => setViewingMyPosts(false)}
         onPostItem={() => setPostOpen(true)}
+        onOpenInbox={() => setClaimsPanelOpen(true)}
+        inboxCount={inboxCount}
+        inboxUnread={inboxUnread}
       />
 
       <Hero items={items} onPostItem={() => setPostOpen(true)} />
-      <InteractiveMap items={items} />
+      <InteractiveMap
+        items={items}
+        currentUser={user}
+        claims={claims}
+        claimBusy={claimBusy}
+        onClaim={handleCreateClaim}
+        onOpenChat={handleOpenChat}
+        onRequireSignIn={() => setAuthOpen(true)}
+      />
       <LiveStats items={items} />
 
       <section className="px-3 sm:px-6 lg:px-10 pt-8">
@@ -2853,6 +3742,18 @@ function App() {
       />
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
       <ContactModal item={contactItem} onClose={() => setContactItem(null)} />
+      <ClaimsPanel
+        open={claimsPanelOpen}
+        onClose={() => setClaimsPanelOpen(false)}
+        claims={claims}
+        currentUser={user}
+        onOpenChat={handleOpenChat}
+      />
+      <ChatModal
+        claim={chatClaim}
+        currentUser={user}
+        onClose={handleCloseChat}
+      />
     </>
   );
 }
