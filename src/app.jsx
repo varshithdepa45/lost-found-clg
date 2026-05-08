@@ -1699,6 +1699,102 @@ function InteractiveMap({
       mapInstance.current.flyTo(MAP_CENTER, 13, { duration: 0.7 });
   };
 
+  // Fly the map so every visible marker fits in the viewport. Single-
+  // item case zooms in instead of fitting a degenerate bounding box.
+  const handleFitAll = useCallback(() => {
+    if (!mapInstance.current || !window.L) return;
+    const L = window.L;
+    const valid = visibleItems.filter(
+      (i) =>
+        Array.isArray(i.coords) &&
+        Number.isFinite(i.coords[0]) &&
+        Number.isFinite(i.coords[1]),
+    );
+    if (valid.length === 0) return;
+    if (valid.length === 1) {
+      mapInstance.current.flyTo(valid[0].coords, 15, { duration: 0.7 });
+      return;
+    }
+    const bounds = L.latLngBounds(valid.map((i) => i.coords));
+    if (!bounds.isValid()) return;
+    mapInstance.current.flyToBounds(bounds, {
+      padding: [60, 60],
+      maxZoom: 15,
+      duration: 0.8,
+    });
+  }, [visibleItems]);
+
+  // One-shot: when items first arrive, if none are inside the
+  // default NYC viewport, auto-fit so the user actually sees them.
+  const didInitialFitRef = useRef(false);
+  useEffect(() => {
+    if (didInitialFitRef.current) return;
+    if (!mapInstance.current || !window.L) return;
+    if (visibleItems.length === 0) return;
+    // Wait long enough for invalidateSize timers to settle so
+    // map.getBounds() reports the real viewport.
+    const t = setTimeout(() => {
+      if (didInitialFitRef.current || !mapInstance.current) return;
+      const L = window.L;
+      const map = mapInstance.current;
+      const valid = visibleItems.filter(
+        (i) =>
+          Array.isArray(i.coords) &&
+          Number.isFinite(i.coords[0]) &&
+          Number.isFinite(i.coords[1]),
+      );
+      if (valid.length === 0) return;
+      const view = map.getBounds();
+      const anyVisible = valid.some((i) =>
+        view.contains(L.latLng(i.coords)),
+      );
+      didInitialFitRef.current = true;
+      if (!anyVisible) {
+        if (valid.length === 1) {
+          map.flyTo(valid[0].coords, 14, { duration: 0.8 });
+        } else {
+          const b = L.latLngBounds(valid.map((i) => i.coords));
+          if (b.isValid()) {
+            map.flyToBounds(b, {
+              padding: [60, 60],
+              maxZoom: 14,
+              duration: 0.8,
+            });
+          }
+        }
+      }
+    }, 1100);
+    return () => clearTimeout(t);
+  }, [visibleItems]);
+
+  // When the filter changes (e.g. user clicks "Lost" and the new
+  // set is entirely off-screen), auto-fit too.
+  const prevFilterRef = useRef(filter);
+  useEffect(() => {
+    if (prevFilterRef.current === filter) return;
+    prevFilterRef.current = filter;
+    if (!mapInstance.current || !window.L) return;
+    const t = setTimeout(() => {
+      if (!mapInstance.current) return;
+      const L = window.L;
+      const map = mapInstance.current;
+      const valid = visibleItems.filter(
+        (i) =>
+          Array.isArray(i.coords) &&
+          Number.isFinite(i.coords[0]) &&
+          Number.isFinite(i.coords[1]),
+      );
+      if (valid.length === 0) return;
+      const view = map.getBounds();
+      const anyVisible = valid.some((i) =>
+        view.contains(L.latLng(i.coords)),
+      );
+      if (!anyVisible) handleFitAll();
+    }, 60);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
+
   const handleLocateMe = useCallback(() => {
     setLocError(null);
     if (!navigator.geolocation) {
@@ -1861,6 +1957,19 @@ function InteractiveMap({
               <>📍 you · centered</>
             ) : (
               <>📍 locate me</>
+            )}
+          </button>
+          <button
+            onClick={handleFitAll}
+            disabled={visibleItems.length === 0}
+            className="px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-300 hover:text-white hover:border-purple-400/40 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Zoom & pan to fit every visible pin"
+          >
+            ⛶ fit all
+            {visibleItems.length > 0 && (
+              <span className="text-[9px] tabular-nums opacity-70">
+                {visibleItems.length}
+              </span>
             )}
           </button>
           <button
