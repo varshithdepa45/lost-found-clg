@@ -404,18 +404,298 @@ function matchScore(lost, found) {
   return Math.min(1, nameSim * 0.55 + descSim * 0.2 + locSim * 0.15 + catBoost);
 }
 
-function findTopMatches(items, limit = 4) {
-  const lost = items.filter((i) => i.type === "lost");
-  const found = items.filter((i) => i.type === "found");
+/* ---------- Image fingerprinting (no external deps, pure canvas) ----------
+
+   Two complementary signals computed once per photo:
+     1. dHash (8x8 difference hash, 64 bits as a 0/1 string)
+        Captures structure / edges. Robust to lighting + small crops.
+     2. Colour histogram (4x4x4 RGB bins, 64-d normalized vector)
+        Captures palette. Catches recolour / filter variants.
+
+   Image similarity = 0.65 * (1 - hammingDistance / 64) + 0.35 * cosine(hist).
+
+   This is the standard "perceptual hash" approach used in Imagga,
+   Tineye-lite tools, etc. Good enough for hackathon-grade duplicate
+   and near-duplicate detection without shipping an ML model.
+*/
+
+const _imgFpCache = new Map(); // itemId -> { dhash, hist, photoLen }
+
+function _loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("image load failed"));
+    img.src = src;
+  });
+}
+
+async function computeImageFingerprint(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string") return null;
+  let img;
+  try {
+    img = await _loadImage(dataUrl);
+  } catch {
+    return null;
+  }
+
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+
+  // -- dHash (9x8 grayscale, compare adjacent horizontal pixels) ----
+  c.width = 9;
+  c.height = 8;
+  ctx.drawImage(img, 0, 0, 9, 8);
+  let pix;
+  try {
+    pix = ctx.getImageData(0, 0, 9, 8).data;
+  } catch {
+    return null; // tainted canvas — shouldn't happen for data: URLs
+  }
+  const gray = new Float32Array(72);
+  for (let i = 0, j = 0; i < pix.length; i += 4, j++) {
+    gray[j] = 0.299 * pix[i] + 0.587 * pix[i + 1] + 0.114 * pix[i + 2];
+  }
+  let dhash = "";
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const a = gray[row * 9 + col];
+      const b = gray[row * 9 + col + 1];
+      dhash += a < b ? "1" : "0";
+    }
+  }
+
+  // -- Colour histogram (32x32, 4 bins per channel = 64-dim) -------
+  c.width = 32;
+  c.height = 32;
+  ctx.drawImage(img, 0, 0, 32, 32);
+  const pix2 = ctx.getImageData(0, 0, 32, 32).data;
+  const hist = new Float32Array(64);
+  let total = 0;
+  for (let i = 0; i < pix2.length; i += 4) {
+    const r = pix2[i] >> 6; // 0..3
+    const g = pix2[i + 1] >> 6;
+    const b = pix2[i + 2] >> 6;
+    hist[(r << 4) | (g << 2) | b]++;
+    total++;
+  }
+  if (total > 0) for (let i = 0; i < 64; i++) hist[i] /= total;
+
+  return { dhash, hist };
+}
+
+function hammingDistance64(a, b) {
+  if (!a || !b || a.length !== 64 || b.length !== 64) return 64;
+  let d = 0;
+  for (let i = 0; i < 64; i++) if (a.charCodeAt(i) !== b.charCodeAt(i)) d++;
+  return d;
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0,
+    na = 0,
+    nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return na && nb ? dot / Math.sqrt(na * nb) : 0;
+}
+
+// Returns 0..1 similarity, or null if either fingerprint is missing.
+function imageSimilarity(fpA, fpB) {
+  if (!fpA || !fpB) return null;
+  const hashSim = 1 - hammingDistance64(fpA.dhash, fpB.dhash) / 64;
+  const histSim = cosineSimilarity(fpA.hist, fpB.hist);
+  return Math.max(0, Math.min(1, hashSim * 0.65 + histSim * 0.35));
+}
+
+/* ---------- Advanced matching ---------- */
+
+// Real-world distance in metres between two items if both have plottable
+// coords. Uses a haversine approximation — good enough at city scale.
+function itemDistanceMeters(a, b) {
+  const ca = itemCoords(a);
+  const cb = itemCoords(b);
+  if (
+    !ca ||
+    !cb ||
+    !Number.isFinite(ca[0]) ||
+    !Number.isFinite(cb[0])
+  )
+    return null;
+  const aHasReal =
+    Number.isFinite(parseFloat(a?.lat)) && Number.isFinite(parseFloat(a?.lon));
+  const bHasReal =
+    Number.isFinite(parseFloat(b?.lat)) && Number.isFinite(parseFloat(b?.lon));
+  if (!aHasReal || !bHasReal) return null; // ignore hashed pseudo-coords
+  const toRad = (x) => (x * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(cb[0] - ca[0]);
+  const dLon = toRad(cb[1] - ca[1]);
+  const s1 = Math.sin(dLat / 2);
+  const s2 = Math.sin(dLon / 2);
+  const h =
+    s1 * s1 +
+    Math.cos(toRad(ca[0])) * Math.cos(toRad(cb[0])) * s2 * s2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function locationProximityBoost(distMeters) {
+  if (distMeters == null) return null;
+  if (distMeters < 500) return 0.2;
+  if (distMeters < 2000) return 0.13;
+  if (distMeters < 10000) return 0.06;
+  if (distMeters < 50000) return 0.02;
+  return 0;
+}
+
+function advancedMatchScore({ lost, found, imgSim, distance }) {
+  if (!lost || !found || lost.type === found.type) return 0;
+  const titleSim = jaccard(
+    lost.itemOriginal || lost.item,
+    found.itemOriginal || found.item,
+  );
+  const descSim = jaccard(lost.description, found.description);
+  const catBoost =
+    lost.category && lost.category === found.category ? 0.12 : 0;
+  const locBoost =
+    locationProximityBoost(distance) ??
+    jaccard(
+      lost.locationOriginal || lost.location,
+      found.locationOriginal || found.location,
+    ) * 0.10;
+  const imgBoost = imgSim != null ? imgSim * 0.22 : 0;
+  // Weights chosen so each factor *can* push score across thresholds:
+  //   title 38, desc 18, category 12, location 20, image 22  →  100+
+  return Math.max(
+    0,
+    Math.min(1, titleSim * 0.38 + descSim * 0.18 + catBoost + locBoost + imgBoost),
+  );
+}
+
+/* ---------- Per-item fraud risk ---------- */
+
+function itemFraudRisk(item, allItems, fingerprints) {
+  if (!item) return { score: 0, level: "low", reasons: [] };
+  let score = 0;
+  const reasons = [];
+
+  if ((item.description || "").trim().length > 0 && (item.description || "").trim().length < 8) {
+    score += 12;
+    reasons.push("Very short description");
+  }
+  if (!item.photoData && (!item.userId || item.userId === "anonymous")) {
+    score += 22;
+    reasons.push("Anonymous post with no photo");
+  }
+  if (!item.email && !item.phone) {
+    score += 14;
+    reasons.push("No contact info");
+  }
+  const todayKey = new Date().toISOString().slice(0, 10);
+  if (item.date && item.date > todayKey) {
+    score += 28;
+    reasons.push("Future-dated");
+  }
+
+  // Duplicate description across distinct posters
+  const myDesc = (item.description || "").trim().toLowerCase();
+  if (myDesc.length >= 15) {
+    const dupes = allItems.filter(
+      (i) =>
+        i.id !== item.id &&
+        (i.description || "").trim().toLowerCase() === myDesc,
+    );
+    if (dupes.length > 0) {
+      score += Math.min(28, 14 + dupes.length * 6);
+      reasons.push(`Identical description in ${dupes.length} other post(s)`);
+    }
+  }
+
+  // Image fingerprint reused by a different poster
+  const myFp = fingerprints?.[item.id];
+  if (myFp && allItems.length > 1) {
+    let hits = 0;
+    for (const o of allItems) {
+      if (o.id === item.id) continue;
+      if (o.userId && item.userId && o.userId === item.userId) continue;
+      const oFp = fingerprints[o.id];
+      if (!oFp) continue;
+      const s = imageSimilarity(myFp, oFp);
+      if (s != null && s > 0.92) hits++;
+    }
+    if (hits > 0) {
+      score += Math.min(35, hits * 18);
+      reasons.push(
+        `Image near-duplicate of ${hits} other user${hits > 1 ? "s'" : "'s"} post`,
+      );
+    }
+  }
+
+  // Spam burst — same email, multiple posts within minutes
+  if (item.email && item.createdAt) {
+    const myT = item.createdAt?.seconds
+      ? item.createdAt.seconds * 1000
+      : new Date(item.createdAt).getTime();
+    const burst = allItems.filter((i) => {
+      if (i.id === item.id || i.email !== item.email || !i.createdAt) return false;
+      const t = i.createdAt?.seconds
+        ? i.createdAt.seconds * 1000
+        : new Date(i.createdAt).getTime();
+      return Math.abs(t - myT) < 5 * 60 * 1000;
+    });
+    if (burst.length > 0) {
+      score += 12;
+      reasons.push(`Posted within 5 min of ${burst.length} other post(s)`);
+    }
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  const level = score >= 60 ? "high" : score >= 30 ? "medium" : "low";
+  return { score, level, reasons };
+}
+
+function findAdvancedMatches(items, fingerprints, limit = 4) {
+  const lostList = items.filter((i) => i.type === "lost");
+  const foundList = items.filter((i) => i.type === "found");
   const pairs = [];
-  for (const l of lost) {
-    for (const f of found) {
-      const score = matchScore(l, f);
-      if (score > 0.25) pairs.push({ lost: l, found: f, score });
+  for (const l of lostList) {
+    for (const f of foundList) {
+      const distance = itemDistanceMeters(l, f);
+      const imgSim = imageSimilarity(
+        fingerprints?.[l.id],
+        fingerprints?.[f.id],
+      );
+      const score = advancedMatchScore({ lost: l, found: f, imgSim, distance });
+      if (score > 0.25) {
+        const lostRisk = itemFraudRisk(l, items, fingerprints);
+        const foundRisk = itemFraudRisk(f, items, fingerprints);
+        const fraud =
+          lostRisk.score >= foundRisk.score ? lostRisk : foundRisk;
+        pairs.push({
+          lost: l,
+          found: f,
+          score,
+          imgSim,
+          distance,
+          fraud,
+          trust: Math.round(
+            (computeTrustScore(l, items) + computeTrustScore(f, items)) / 2,
+          ),
+        });
+      }
     }
   }
   pairs.sort((a, b) => b.score - a.score);
   return pairs.slice(0, limit);
+}
+
+function findTopMatches(items, limit = 4) {
+  // Kept for backward compat — equivalent to findAdvancedMatches with
+  // no fingerprints (image similarity won't contribute).
+  return findAdvancedMatches(items, {}, limit);
 }
 
 function detectFraud(items) {
@@ -504,6 +784,72 @@ function detectFraud(items) {
 }
 
 /* ================== HOOKS ================== */
+
+// Compute fingerprints once per item (cached by id + photo length).
+// Runs in parallel; surfaces a result map and a `computing` flag so
+// the UI can show a "scanning images" affordance while AI runs.
+function useImageFingerprints(items) {
+  const [fingerprints, setFingerprints] = useState({});
+  const [computing, setComputing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const work = items.filter(
+      (i) =>
+        i.photoData &&
+        (!_imgFpCache.has(i.id) ||
+          _imgFpCache.get(i.id)?.photoLen !== i.photoData.length),
+    );
+    if (work.length === 0) {
+      // Nothing to compute — surface what's already cached.
+      const next = {};
+      for (const i of items) {
+        const fp = _imgFpCache.get(i.id);
+        if (fp) next[i.id] = fp;
+      }
+      setFingerprints((prev) => {
+        // Avoid useless updates if nothing actually changed.
+        const sameSize =
+          Object.keys(prev).length === Object.keys(next).length;
+        if (sameSize && Object.keys(next).every((k) => prev[k] === next[k]))
+          return prev;
+        return next;
+      });
+      return;
+    }
+
+    setComputing(true);
+    Promise.all(
+      work.map(async (i) => {
+        try {
+          const fp = await computeImageFingerprint(i.photoData);
+          if (fp) {
+            fp.photoLen = i.photoData.length;
+            _imgFpCache.set(i.id, fp);
+          }
+          return [i.id, fp];
+        } catch {
+          return [i.id, null];
+        }
+      }),
+    ).then(() => {
+      if (cancelled) return;
+      const next = {};
+      for (const i of items) {
+        const fp = _imgFpCache.get(i.id);
+        if (fp) next[i.id] = fp;
+      }
+      setFingerprints(next);
+      setComputing(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  return { fingerprints, computing };
+}
 
 function useAnimatedNumber(target, duration = 1.1) {
   const [value, setValue] = useState(0);
@@ -1647,23 +1993,229 @@ function InteractiveMap({
 
 /* ================== SMART MATCH CARDS ================== */
 
+function AdvancedMatchCard({ match, idx }) {
+  const { lost, found, score, imgSim, distance, fraud, trust } = match;
+  const pct = Math.round(score * 100);
+  const imgPct = imgSim != null ? Math.round(imgSim * 100) : null;
+  const distLabel = formatDistance(distance);
+  const fraudColor =
+    fraud.level === "high"
+      ? "#fb7185"
+      : fraud.level === "medium"
+        ? "#fbbf24"
+        : "#34d399";
+  const trustColor = trust >= 70 ? "#34d399" : trust >= 45 ? "#fbbf24" : "#94a3b8";
+  const gradId = `mg-${lost.id}-${found.id}`;
+
+  // Highlight strongest signal in the summary line
+  const summary = [
+    `${pct}% Match`,
+    imgPct != null ? `${imgPct}% Image` : null,
+    distLabel ? distLabel : null,
+    `${fraud.level === "low" ? "Low" : fraud.level === "medium" ? "Med" : "High"} Risk`,
+  ]
+    .filter(Boolean)
+    .join(" • ");
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: idx * 0.06, duration: 0.4 }}
+      className="tn-match-card relative tn-glass rounded-2xl p-4 hover:border-purple-400/40 transition-colors"
+    >
+      {/* Top row: thumbs + confidence gauge */}
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <MatchThumb item={lost} role="lost" />
+          <span className="tn-match-arrow">↔</span>
+          <MatchThumb item={found} role="found" />
+          <div className="ml-2 min-w-0 hidden sm:block">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-mono text-slate-500">
+              {lost.category || "—"} → {found.category || "—"}
+            </div>
+            <div className="text-sm font-semibold text-slate-100 truncate">
+              {found.itemOriginal || found.item || "Untitled"}
+            </div>
+          </div>
+        </div>
+
+        <div className="relative w-14 h-14 shrink-0">
+          <svg className="w-14 h-14 -rotate-90" viewBox="0 0 36 36">
+            <circle
+              cx="18"
+              cy="18"
+              r="16"
+              fill="none"
+              stroke="rgba(255,255,255,0.06)"
+              strokeWidth="3"
+            />
+            <circle
+              cx="18"
+              cy="18"
+              r="16"
+              fill="none"
+              stroke={`url(#${gradId})`}
+              strokeWidth="3"
+              strokeDasharray={`${(score * 100.53).toFixed(2)} 100.53`}
+              strokeLinecap="round"
+            />
+            <defs>
+              <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#22d3ee" />
+                <stop offset="100%" stopColor="#a855f7" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-[13px] font-mono font-bold tabular-nums text-slate-100 leading-none">
+              {pct}%
+            </span>
+            <span className="text-[8px] font-mono text-purple-300 mt-0.5 uppercase tracking-[0.12em]">
+              match
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Side-by-side details */}
+      <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+        <div className="rounded-lg bg-rose-400/[0.05] border border-rose-400/15 p-2.5">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-rose-300 font-mono mb-1">
+            Lost
+          </div>
+          <div className="font-medium text-slate-100 truncate">
+            {lost.itemOriginal || lost.item}
+          </div>
+          <div className="text-slate-400 truncate flex items-center gap-1 mt-0.5 text-[11px]">
+            <Icon.Pin />
+            {lost.locationOriginal || lost.location || "—"}
+          </div>
+        </div>
+        <div className="rounded-lg bg-emerald-400/[0.05] border border-emerald-400/15 p-2.5">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-emerald-300 font-mono mb-1">
+            Found
+          </div>
+          <div className="font-medium text-slate-100 truncate">
+            {found.itemOriginal || found.item}
+          </div>
+          <div className="text-slate-400 truncate flex items-center gap-1 mt-0.5 text-[11px]">
+            <Icon.Pin />
+            {found.locationOriginal || found.location || "—"}
+          </div>
+        </div>
+      </div>
+
+      {/* Stats badges */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        {imgPct != null && (
+          <span
+            className="tn-match-stat"
+            style={{
+              "--c": imgPct >= 70 ? "#a855f7" : imgPct >= 40 ? "#22d3ee" : "#94a3b8",
+            }}
+            title="Visual similarity from dHash + colour histogram"
+          >
+            <Icon.Sparkles />
+            {imgPct}% img
+          </span>
+        )}
+        {distLabel && (
+          <span className="tn-match-stat" style={{ "--c": "#22d3ee" }}>
+            <Icon.Pin />
+            {distLabel}
+          </span>
+        )}
+        <span
+          className="tn-match-stat"
+          style={{ "--c": trustColor }}
+          title="Average trust score across both posts"
+        >
+          <Icon.Shield />
+          Trust {trust}
+        </span>
+        <span
+          className="tn-match-stat"
+          style={{ "--c": fraudColor }}
+          title={fraud.reasons.join(" · ") || "No anomalies detected"}
+        >
+          <Icon.Alert />
+          {fraud.level === "low"
+            ? "Low risk"
+            : fraud.level === "medium"
+              ? "Medium risk"
+              : "High risk"}
+        </span>
+      </div>
+
+      {/* Summary line */}
+      <div className="text-[11px] font-mono text-slate-400 italic">
+        “{summary}”
+      </div>
+    </motion.div>
+  );
+}
+
+function MatchThumb({ item, role }) {
+  const accent = role === "lost" ? "#fb7185" : "#34d399";
+  return (
+    <div
+      className="tn-match-thumb"
+      style={{ "--c": accent }}
+      title={item.itemOriginal || item.item || ""}
+    >
+      {item.photoData ? (
+        <img src={item.photoData} alt="" />
+      ) : (
+        <div className="tn-match-thumb-empty">
+          <span>{CAT_GLYPH[item.category] || "📦"}</span>
+        </div>
+      )}
+      <div className="tn-match-thumb-tag">{role === "lost" ? "LOST" : "FOUND"}</div>
+    </div>
+  );
+}
+
 function SmartMatchCards({ items }) {
-  const matches = useMemo(() => findTopMatches(items, 4), [items]);
+  const { fingerprints, computing } = useImageFingerprints(items);
+  const matches = useMemo(
+    () => findAdvancedMatches(items, fingerprints, 4),
+    [items, fingerprints],
+  );
+
+  const totalPhotos = items.filter((i) => i.photoData).length;
+  const fingerprinted = Object.keys(fingerprints).length;
 
   return (
     <section>
-      <div className="mb-4 px-1">
-        <div className="text-[10px] uppercase tracking-[0.22em] text-purple-400 font-mono mb-1.5 flex items-center gap-2">
-          <span className="w-3 h-px bg-purple-400" />
-          Section 02 · AI Matching
+      <div className="mb-4 px-1 flex items-end justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.22em] text-purple-400 font-mono mb-1.5 flex items-center gap-2">
+            <span className="w-3 h-px bg-purple-400" />
+            AI Matching · v2
+          </div>
+          <h2 className="text-xl sm:text-2xl font-semibold tracking-tight flex items-center gap-2">
+            <span className="text-purple-300"><Icon.Brain /></span>
+            Smart Match Engine
+          </h2>
+          <p className="text-sm text-slate-400 mt-1">
+            Title · description · category · proximity · image similarity.
+          </p>
         </div>
-        <h2 className="text-xl sm:text-2xl font-semibold tracking-tight flex items-center gap-2">
-          <span className="text-purple-300"><Icon.Brain /></span>
-          Smart Match Engine
-        </h2>
-        <p className="text-sm text-slate-400 mt-1">
-          Top probabilistic links between lost and found posts.
-        </p>
+        <div
+          className={cn(
+            "px-3 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.06] text-[10px] font-mono uppercase tracking-wider flex items-center gap-2",
+            computing ? "text-purple-200" : "text-slate-400",
+          )}
+          title={`${fingerprinted}/${totalPhotos} photos fingerprinted`}
+        >
+          {computing ? (
+            <span className="w-2.5 h-2.5 rounded-full border-2 border-purple-400/30 border-t-purple-400 animate-spin" />
+          ) : (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
+          )}
+          {computing ? "Scanning images…" : `${fingerprinted}/${totalPhotos} fingerprinted`}
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -1674,91 +2226,17 @@ function SmartMatchCards({ items }) {
             </div>
             <p className="text-slate-300 text-sm font-medium">Awaiting more signals</p>
             <p className="text-slate-500 text-xs mt-1">
-              Matches surface here as more reports enter the network.
+              Matches surface here once a Lost and a Found item share enough signals.
             </p>
           </div>
         ) : (
-          matches.map((m, idx) => {
-            const gradId = `mg-${m.lost.id}-${m.found.id}`;
-            return (
-              <motion.div
-                key={`${m.lost.id}-${m.found.id}`}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: idx * 0.06 }}
-                className="tn-glass rounded-2xl p-4 hover:border-purple-400/35 transition-colors"
-              >
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="relative w-11 h-11 shrink-0">
-                    <svg className="w-11 h-11 -rotate-90" viewBox="0 0 36 36">
-                      <circle
-                        cx="18"
-                        cy="18"
-                        r="16"
-                        fill="none"
-                        stroke="rgba(255,255,255,0.06)"
-                        strokeWidth="3"
-                      />
-                      <circle
-                        cx="18"
-                        cy="18"
-                        r="16"
-                        fill="none"
-                        stroke={`url(#${gradId})`}
-                        strokeWidth="3"
-                        strokeDasharray={`${(m.score * 100.53).toFixed(2)} 100.53`}
-                        strokeLinecap="round"
-                      />
-                      <defs>
-                        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
-                          <stop offset="0%" stopColor="#22d3ee" />
-                          <stop offset="100%" stopColor="#a855f7" />
-                        </linearGradient>
-                      </defs>
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center text-[10px] font-mono font-semibold tabular-nums text-slate-100">
-                      {Math.round(m.score * 100)}%
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[10px] text-slate-400 font-mono uppercase tracking-[0.16em]">
-                      cross-link · {Math.round(m.score * 100)}% confidence
-                    </div>
-                    <div className="text-sm text-slate-200 font-medium">
-                      Probable match detected
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-lg bg-rose-400/[0.05] border border-rose-400/15 p-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-rose-300 font-mono mb-1">
-                      Lost
-                    </div>
-                    <div className="font-medium text-slate-100 truncate">
-                      {m.lost.itemOriginal || m.lost.item}
-                    </div>
-                    <div className="text-slate-400 truncate flex items-center gap-1 mt-0.5">
-                      <Icon.Pin />
-                      {m.lost.locationOriginal || m.lost.location}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-emerald-400/[0.05] border border-emerald-400/15 p-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-emerald-300 font-mono mb-1">
-                      Found
-                    </div>
-                    <div className="font-medium text-slate-100 truncate">
-                      {m.found.itemOriginal || m.found.item}
-                    </div>
-                    <div className="text-slate-400 truncate flex items-center gap-1 mt-0.5">
-                      <Icon.Pin />
-                      {m.found.locationOriginal || m.found.location}
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            );
-          })
+          matches.map((m, idx) => (
+            <AdvancedMatchCard
+              key={`${m.lost.id}-${m.found.id}`}
+              match={m}
+              idx={idx}
+            />
+          ))
         )}
       </div>
     </section>
