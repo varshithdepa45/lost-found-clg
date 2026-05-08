@@ -382,6 +382,17 @@ function trustLabel(score) {
   return "Unvetted";
 }
 
+// "Recently recovered" = item.matched flipped within the last 14 days.
+// Lifted to module scope so the dashboard, map, and analytics can
+// share a single source of truth.
+const RECOVERY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+function isRecoveredItem(item) {
+  if (!item?.matched) return false;
+  const ms = tsToMillis(item.recoveredAt);
+  if (!ms) return true; // matched but no timestamp — still treat as recovered
+  return Date.now() - ms <= RECOVERY_WINDOW_MS;
+}
+
 function tokenize(s) {
   return (s || "").toLowerCase().match(/\w+/g) || [];
 }
@@ -1274,17 +1285,6 @@ function InteractiveMap({
     [items],
   );
 
-  // An item is treated as "recently recovered" once an approved claim
-  // has flipped its `matched` flag. We honor a 14-day window so older
-  // matches don't keep glowing forever.
-  const RECOVERY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-  const isRecoveredItem = useCallback((item) => {
-    if (!item?.matched) return false;
-    const ms = tsToMillis(item.recoveredAt);
-    if (!ms) return true; // matched but no timestamp — still treat as recovered
-    return Date.now() - ms <= RECOVERY_WINDOW_MS;
-  }, []);
-
   const visibleItems = useMemo(() => {
     if (filter === "all") return itemsWithCoords;
     if (filter === "recovered")
@@ -1292,7 +1292,7 @@ function InteractiveMap({
     return itemsWithCoords.filter(
       (i) => (i.type || "").toString().trim().toLowerCase() === filter,
     );
-  }, [itemsWithCoords, filter, isRecoveredItem]);
+  }, [itemsWithCoords, filter]);
 
   // One-time map init — defensive against load-order races and
   // post-mount layout shifts (Tailwind CDN JIT, fonts, responsive
@@ -1497,16 +1497,31 @@ function InteractiveMap({
       const isDimmed = !!selectedId && !isSelected;
       const glyph = CAT_GLYPH[item.category] || "📍";
 
-      // Radius circle — recovered uses a dotted gold ring, found
-      // uses dashed emerald, lost uses tighter dashed rose so the
-      // three are distinguishable even at small zoom levels.
+      // Radius circle — sized & weighted so each kind reads
+      // even at zoom-out:
+      //   lost      → urgent rose, thicker dashed ring
+      //   found     → calmer emerald, thin dashed ring
+      //   recovered → wide gold dotted ring
       L.circle([lat, lng], {
         radius: kind === "recovered" ? 420 : 350,
         color,
-        weight: kind === "recovered" ? 1.4 : 1,
-        opacity: isDimmed ? 0.18 : kind === "recovered" ? 0.7 : 0.55,
+        weight:
+          kind === "lost" ? 1.8 : kind === "recovered" ? 1.4 : 1,
+        opacity: isDimmed
+          ? 0.18
+          : kind === "lost"
+            ? 0.85
+            : kind === "recovered"
+              ? 0.7
+              : 0.55,
         fillColor: color,
-        fillOpacity: isDimmed ? 0.02 : kind === "recovered" ? 0.1 : 0.07,
+        fillOpacity: isDimmed
+          ? 0.02
+          : kind === "lost"
+            ? 0.14
+            : kind === "recovered"
+              ? 0.1
+              : 0.07,
         dashArray:
           kind === "recovered" ? "2 6" : kind === "lost" ? "3 5" : "4 6",
         interactive: false,
@@ -4264,6 +4279,641 @@ function Footer() {
 
 /* ================== ROOT APP ================== */
 
+/* ================== EDIT ITEM SHEET ================== */
+
+function EditItemSheet({ item, onClose }) {
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (item) {
+      setForm({
+        item: item.itemOriginal || item.item || "",
+        description: item.description || "",
+        category: item.category || "",
+        location: item.locationOriginal || item.location || "",
+        lat: typeof item.lat === "number" ? item.lat : null,
+        lon: typeof item.lon === "number" ? item.lon : null,
+        date: item.date || "",
+      });
+      setErr("");
+    } else {
+      setForm(null);
+    }
+  }, [item]);
+
+  const update = (k) =>
+    form ? (e) => setForm((f) => ({ ...f, [k]: e.target.value })) : () => {};
+
+  const handleSave = async () => {
+    setErr("");
+    if (!form.item.trim() || !form.location.trim() || !form.date) {
+      setErr("Item name, location, and date are required.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, "items", item.id), {
+        item: form.item.toLowerCase(),
+        itemOriginal: form.item,
+        description: form.description,
+        category: form.category,
+        location: form.location.toLowerCase(),
+        locationOriginal: form.location,
+        lat: Number.isFinite(form.lat) ? form.lat : null,
+        lon: Number.isFinite(form.lon) ? form.lon : null,
+        date: form.date,
+        updatedAt: serverTimestamp(),
+      });
+      onClose();
+    } catch (e) {
+      setErr(e.message || "Failed to save changes.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {item && form && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[68]"
+          />
+          <motion.aside
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", damping: 30, stiffness: 240 }}
+            className="fixed top-0 right-0 bottom-0 w-full sm:w-[480px] z-[69] overflow-y-auto"
+          >
+            <div className="tn-glass-strong h-full p-6 sm:p-8 border-l border-white/[0.08]">
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.22em] text-purple-400 font-mono mb-1">
+                Edit · Item #{item.id?.slice(0, 6)}
+              </div>
+              <h2 className="text-2xl font-semibold tracking-tight">
+                Update report
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Fix typos, add details, or relocate the pin.
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              className="tn-btn tn-btn-ghost p-2 -mr-1 rounded-lg"
+              aria-label="Close"
+            >
+              <Icon.X />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field
+              label="Item Name"
+              v={form.item}
+              onChange={update("item")}
+              placeholder="e.g., AirPods Pro"
+              full
+            />
+            <Field
+              label="Date"
+              v={form.date}
+              onChange={update("date")}
+              type="date"
+            />
+            <Field
+              label="Category"
+              v={form.category}
+              onChange={update("category")}
+              as="select"
+            >
+              <option value="">Select…</option>
+              {CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </Field>
+
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] uppercase tracking-[0.18em] text-slate-400 font-mono mb-1.5">
+                Location
+              </label>
+              <LocationAutocomplete
+                value={form.location}
+                onChange={(v) =>
+                  setForm((f) => ({
+                    ...f,
+                    location: v,
+                    lat: null,
+                    lon: null,
+                  }))
+                }
+                onSelect={(sel) =>
+                  setForm((f) => ({
+                    ...f,
+                    location: sel.name,
+                    lat: sel.lat,
+                    lon: sel.lon,
+                  }))
+                }
+                placeholder="Search a place…"
+              />
+              {Number.isFinite(form.lat) && Number.isFinite(form.lon) ? (
+                <div className="mt-1.5 text-[10px] font-mono text-cyan-300">
+                  Coords locked · {form.lat.toFixed(4)}°, {form.lon.toFixed(4)}°
+                </div>
+              ) : (
+                <div className="mt-1.5 text-[10px] font-mono text-slate-500">
+                  {item.lat
+                    ? "Coords cleared — pick a suggestion to re-attach precise lat/lon."
+                    : "Pick a suggestion to attach precise coordinates."}
+                </div>
+              )}
+            </div>
+
+            <Field
+              label="Description"
+              v={form.description}
+              onChange={update("description")}
+              placeholder="Color, brand, identifying features…"
+              as="textarea"
+              full
+            />
+          </div>
+
+          {err && (
+            <div className="mt-4 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
+              {err}
+            </div>
+          )}
+
+          <div className="mt-6 flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="tn-btn tn-btn-ghost flex-1 py-3 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={busy}
+              className="tn-btn tn-btn-primary flex-1 py-3 text-sm"
+            >
+              {busy ? "Saving…" : (
+                <>
+                  <Icon.Bolt />
+                  Save changes
+                </>
+              )}
+            </button>
+          </div>
+          <div className="mt-3 text-[10px] font-mono text-slate-600 uppercase tracking-wider text-center">
+            Changes sync to Firebase in real time
+          </div>
+            </div>
+          </motion.aside>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/* ================== YOUR UPLOADS DASHBOARD ================== */
+
+function UploadStat({ label, value, accent }) {
+  return (
+    <div
+      className="tn-glass rounded-2xl px-4 py-3 flex flex-col gap-0.5 relative overflow-hidden"
+      style={{ "--c": accent }}
+    >
+      <span
+        className="absolute inset-x-0 top-0 h-px"
+        style={{
+          background: `linear-gradient(90deg, transparent, ${accent}, transparent)`,
+          opacity: 0.6,
+        }}
+      />
+      <div className="text-[10px] uppercase tracking-[0.18em] font-mono text-slate-500">
+        {label}
+      </div>
+      <div
+        className="text-2xl font-semibold font-mono tabular-nums"
+        style={{ color: accent }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function UploadCard({
+  item,
+  trust,
+  recovered,
+  pending,
+  approved,
+  onEdit,
+  onDelete,
+  onOpenChat,
+  idx,
+}) {
+  const status = recovered
+    ? "recovered"
+    : (item.type || "").toString().trim().toLowerCase() === "lost"
+      ? "lost"
+      : "found";
+  const accent =
+    status === "recovered"
+      ? "#fbbf24"
+      : status === "lost"
+        ? "#fb7185"
+        : "#34d399";
+  const statusLabel =
+    status === "recovered"
+      ? "RECOVERED"
+      : status === "lost"
+        ? "LOST"
+        : "FOUND";
+  const trustGrad = `tn-trust-${(item.id || "x").replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const photoSrc = item.photoData;
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      transition={{ delay: Math.min(idx, 6) * 0.05, duration: 0.4 }}
+      className="tn-upload-card relative tn-glass rounded-2xl overflow-hidden"
+      style={{ "--accent": accent }}
+    >
+      <div className="tn-upload-glow" />
+
+      <div className="relative h-32 overflow-hidden">
+        {photoSrc ? (
+          <img
+            src={photoSrc}
+            alt=""
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <div
+            className="w-full h-full flex items-center justify-center text-5xl"
+            style={{
+              background: `linear-gradient(135deg, ${accent}28, rgba(8,10,22,0.7))`,
+            }}
+          >
+            <span style={{ opacity: 0.6 }}>
+              {CAT_GLYPH[item.category] || "📦"}
+            </span>
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0a0c1a] via-[#0a0c1a]/30 to-transparent" />
+        <span
+          className="absolute top-3 left-3 px-2 py-1 rounded-md text-[9.5px] font-mono font-bold uppercase tracking-[0.16em] border"
+          style={{
+            background: `${accent}26`,
+            color: accent,
+            borderColor: `${accent}66`,
+            boxShadow: `0 0 12px ${accent}55`,
+          }}
+        >
+          {statusLabel}
+        </span>
+        {item.category && (
+          <span className="absolute top-3 right-3 px-2 py-1 rounded-md text-[9.5px] font-mono uppercase tracking-[0.12em] bg-black/55 backdrop-blur text-slate-200 border border-white/[0.08]">
+            {item.category}
+          </span>
+        )}
+      </div>
+
+      <div className="p-4 space-y-3">
+        <div>
+          <div className="text-base font-semibold text-slate-50 leading-tight tn-line-clamp-1">
+            {item.itemOriginal || item.item || "Untitled"}
+          </div>
+          <div className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5">
+            <Icon.Pin />
+            {item.locationOriginal || item.location || "—"}
+          </div>
+          <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+            {formatDate(item.date)}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="relative w-12 h-12 shrink-0">
+            <svg className="w-12 h-12 -rotate-90" viewBox="0 0 36 36">
+              <circle
+                cx="18"
+                cy="18"
+                r="16"
+                fill="none"
+                stroke="rgba(255,255,255,0.06)"
+                strokeWidth="3"
+              />
+              <circle
+                cx="18"
+                cy="18"
+                r="16"
+                fill="none"
+                stroke={`url(#${trustGrad})`}
+                strokeWidth="3"
+                strokeDasharray={`${((trust * 100.53) / 100).toFixed(2)} 100.53`}
+                strokeLinecap="round"
+              />
+              <defs>
+                <linearGradient id={trustGrad} x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stopColor="#22d3ee" />
+                  <stop offset="100%" stopColor="#a855f7" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-[12px] font-mono font-bold tabular-nums text-slate-100 leading-none">
+                {trust}
+              </span>
+              <span className="text-[7.5px] font-mono text-cyan-300 mt-0.5 uppercase tracking-[0.12em]">
+                trust
+              </span>
+            </div>
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[9.5px] uppercase tracking-[0.18em] font-mono text-slate-500 mb-1">
+              Recovery progress
+            </div>
+            {recovered ? (
+              <div className="text-[12px] text-amber-300 font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.7)]" />
+                Recovered{" "}
+                <span className="text-slate-500 font-mono">
+                  {item.recoveredAt ? `· ${formatTime(item.recoveredAt)}` : ""}
+                </span>
+              </div>
+            ) : approved > 0 ? (
+              <div className="text-[12px] text-emerald-300 font-medium">
+                <span className="w-1.5 h-1.5 inline-block mr-1 rounded-full bg-emerald-400 align-middle shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
+                {approved} approved · chat open
+              </div>
+            ) : pending > 0 ? (
+              <div className="text-[12px] text-amber-300 font-medium">
+                <span className="w-1.5 h-1.5 inline-block mr-1 rounded-full bg-amber-400 animate-pulse align-middle" />
+                {pending} pending claim{pending > 1 ? "s" : ""}
+              </div>
+            ) : (
+              <div className="text-[12px] text-slate-500">No claims yet</div>
+            )}
+            <div className="mt-1 h-1 rounded-full bg-white/[0.04] overflow-hidden">
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${recovered ? 100 : approved > 0 ? 65 : pending > 0 ? 35 : 6}%`,
+                  background: `linear-gradient(90deg, ${accent}55, ${accent})`,
+                  boxShadow: `0 0 10px ${accent}80`,
+                  transition: "width 0.6s cubic-bezier(.16,1,.3,1)",
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 pt-2 border-t border-white/[0.06]">
+          {!recovered && approved > 0 && onOpenChat && (
+            <button
+              onClick={onOpenChat}
+              className="tn-btn tn-btn-primary text-[11px] py-1.5 px-3 flex-1"
+              title="Open the secure chat with the claimant"
+            >
+              <Icon.Mail />
+              Chat
+            </button>
+          )}
+          <button
+            onClick={onEdit}
+            className="tn-btn tn-btn-ghost text-[11px] py-1.5 px-3 flex-1"
+            title="Edit item details"
+          >
+            ✎ Edit
+          </button>
+          <button
+            onClick={onDelete}
+            className="tn-btn text-[11px] py-1.5 px-3 bg-rose-500/10 text-rose-300 border border-rose-500/30 hover:bg-rose-500/20"
+            title="Delete permanently"
+          >
+            <Icon.Trash />
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+function YourUploads({
+  items,
+  allItems,
+  claims,
+  user,
+  onEdit,
+  onDelete,
+  onShowAll,
+  onOpenChat,
+  onPostItem,
+}) {
+  // Index claims on the user's items so we can render counts inline.
+  const claimsByItem = useMemo(() => {
+    const m = new Map();
+    if (!user) return m;
+    for (const c of claims) {
+      if (c.ownerUid !== user.uid) continue;
+      if (!m.has(c.itemId)) m.set(c.itemId, []);
+      m.get(c.itemId).push(c);
+    }
+    return m;
+  }, [claims, user]);
+
+  const [sortBy, setSortBy] = useState("recent"); // 'recent' | 'progress' | 'trust'
+
+  const sorted = useMemo(() => {
+    const arr = [...items];
+    if (sortBy === "trust") {
+      arr.sort(
+        (a, b) =>
+          computeTrustScore(b, allItems) - computeTrustScore(a, allItems),
+      );
+    } else if (sortBy === "progress") {
+      const score = (i) => {
+        if (isRecoveredItem(i)) return 3;
+        const cs = claimsByItem.get(i.id) || [];
+        if (cs.some((c) => c.status === "approved")) return 2;
+        if (cs.some((c) => c.status === "pending")) return 1;
+        return 0;
+      };
+      arr.sort((a, b) => score(b) - score(a));
+    } else {
+      arr.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    }
+    return arr;
+  }, [items, sortBy, allItems, claimsByItem]);
+
+  const lostCount = items.filter(
+    (i) => (i.type || "").toLowerCase() === "lost",
+  ).length;
+  const foundCount = items.filter(
+    (i) => (i.type || "").toLowerCase() === "found",
+  ).length;
+  const recoveredCount = items.filter(isRecoveredItem).length;
+  const avgTrust = items.length
+    ? Math.round(
+        items.reduce((s, i) => s + computeTrustScore(i, allItems), 0) /
+          items.length,
+      )
+    : 0;
+
+  return (
+    <section className="px-3 sm:px-6 lg:px-10 pt-8">
+      <div className="mb-4 px-1 flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.22em] text-purple-400 font-mono mb-1.5 flex items-center gap-2">
+            <span className="w-3 h-px bg-purple-400" />
+            Dashboard · Your Uploads
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+            <span className="tn-gradient-text">Your</span>{" "}
+            <span className="text-slate-100">recovery footprint</span>
+          </h2>
+          <p className="text-sm text-slate-400 mt-1">
+            Manage everything you've reported on the network in one place.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={onShowAll} className="tn-btn tn-btn-ghost">
+            ← All items
+          </button>
+          <button onClick={onPostItem} className="tn-btn tn-btn-primary">
+            <Icon.Plus />
+            New report
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3 mb-5">
+        <UploadStat label="Total uploads" value={items.length} accent="#a855f7" />
+        <UploadStat label="Lost" value={lostCount} accent="#fb7185" />
+        <UploadStat label="Found" value={foundCount} accent="#34d399" />
+        <UploadStat
+          label="Recovered (14d)"
+          value={recoveredCount}
+          accent="#fbbf24"
+        />
+      </div>
+
+      <div className="tn-glass rounded-xl p-2.5 mb-4 flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 px-1 text-xs">
+          <span className="text-slate-400 font-mono uppercase tracking-wider text-[10px]">
+            Avg Trust
+          </span>
+          <span
+            className="font-mono text-base font-semibold tabular-nums"
+            style={{
+              color:
+                avgTrust >= 70
+                  ? "#34d399"
+                  : avgTrust >= 45
+                    ? "#fbbf24"
+                    : "#94a3b8",
+            }}
+          >
+            {avgTrust}
+          </span>
+          <span className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.12em] hidden sm:inline">
+            · {trustLabel(avgTrust)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1 text-[10px] font-mono">
+          <span className="text-slate-500 uppercase tracking-wider mr-1">
+            Sort
+          </span>
+          {[
+            { k: "recent", label: "Recent" },
+            { k: "progress", label: "Progress" },
+            { k: "trust", label: "Trust" },
+          ].map((o) => (
+            <button
+              key={o.k}
+              onClick={() => setSortBy(o.k)}
+              className={cn(
+                "px-2.5 py-1 rounded-md uppercase tracking-wider transition-colors",
+                sortBy === o.k
+                  ? "bg-purple-400/20 text-purple-200 border border-purple-400/40"
+                  : "text-slate-400 hover:text-slate-200 border border-transparent",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="tn-glass rounded-2xl p-12 text-center">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-white/[0.03] border border-white/[0.06] mb-4 text-slate-500">
+            <Icon.Plus />
+          </div>
+          <p className="text-slate-200 text-base font-medium mb-1">
+            You haven't reported anything yet
+          </p>
+          <p className="text-slate-500 text-sm mb-4">
+            Submit a Lost or Found item to start your recovery footprint.
+          </p>
+          <button onClick={onPostItem} className="tn-btn tn-btn-primary">
+            <Icon.Plus />
+            Report your first item
+          </button>
+        </div>
+      ) : (
+        <motion.div
+          layout
+          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4"
+        >
+          <AnimatePresence mode="popLayout">
+            {sorted.map((item, idx) => {
+              const cs = claimsByItem.get(item.id) || [];
+              const pending = cs.filter((c) => c.status === "pending").length;
+              const approvedClaims = cs.filter((c) => c.status === "approved");
+              return (
+                <UploadCard
+                  key={item.id}
+                  item={item}
+                  idx={idx}
+                  trust={computeTrustScore(item, allItems)}
+                  recovered={isRecoveredItem(item)}
+                  pending={pending}
+                  approved={approvedClaims.length}
+                  onEdit={() => onEdit(item)}
+                  onDelete={() => onDelete(item.id)}
+                  onOpenChat={
+                    approvedClaims.length > 0
+                      ? () => onOpenChat(approvedClaims[0])
+                      : null
+                  }
+                />
+              );
+            })}
+          </AnimatePresence>
+        </motion.div>
+      )}
+    </section>
+  );
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [items, setItems] = useState([]);
@@ -4271,6 +4921,7 @@ function App() {
   const [postOpen, setPostOpen] = useState(false);
   const [contactItem, setContactItem] = useState(null);
   const [viewingMyPosts, setViewingMyPosts] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
 
   // Claims + chat
   const claims = useClaims(user);
@@ -4420,14 +5071,28 @@ function App() {
 
       <AnalyticsDashboard items={items} />
 
-      <ItemGrid
-        items={visibleItems}
-        currentUser={user}
-        onContact={setContactItem}
-        onDelete={handleDelete}
-        viewingMyPosts={viewingMyPosts}
-        onShowAll={() => setViewingMyPosts(false)}
-      />
+      {viewingMyPosts && user ? (
+        <YourUploads
+          items={items.filter((i) => i.userId === user.uid)}
+          allItems={items}
+          claims={claims}
+          user={user}
+          onEdit={(item) => setEditingItem(item)}
+          onDelete={handleDelete}
+          onShowAll={() => setViewingMyPosts(false)}
+          onOpenChat={handleOpenChat}
+          onPostItem={() => setPostOpen(true)}
+        />
+      ) : (
+        <ItemGrid
+          items={visibleItems}
+          currentUser={user}
+          onContact={setContactItem}
+          onDelete={handleDelete}
+          viewingMyPosts={viewingMyPosts}
+          onShowAll={() => setViewingMyPosts(false)}
+        />
+      )}
 
       <Footer />
 
@@ -4449,6 +5114,10 @@ function App() {
         claim={chatClaim}
         currentUser={user}
         onClose={handleCloseChat}
+      />
+      <EditItemSheet
+        item={editingItem}
+        onClose={() => setEditingItem(null)}
       />
     </>
   );
