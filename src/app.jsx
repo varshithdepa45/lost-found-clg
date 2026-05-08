@@ -3729,6 +3729,43 @@ function MarkerCard({
 /* ================== LOCATION AUTOCOMPLETE (Nominatim) ================== */
 
 const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
+const NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse";
+
+// Build a short, human-readable label from a Nominatim address.
+// Falls back to the full display_name and finally to the raw coords.
+function shortAddressLabel(result, lat, lon) {
+  if (!result) {
+    return `${Number(lat).toFixed(4)}°, ${Number(lon).toFixed(4)}°`;
+  }
+  const a = result.address || {};
+  const primary =
+    a.neighbourhood ||
+    a.suburb ||
+    a.village ||
+    a.hamlet ||
+    a.town ||
+    a.city ||
+    a.county ||
+    a.road ||
+    null;
+  const region = a.state || a.country || "";
+  if (primary) return [primary, region].filter(Boolean).join(", ");
+  if (result.display_name) {
+    // Take the first 2 segments of the long display_name as a sensible label
+    const parts = result.display_name.split(",").map((s) => s.trim());
+    return parts.slice(0, 2).join(", ");
+  }
+  return `${Number(lat).toFixed(4)}°, ${Number(lon).toFixed(4)}°`;
+}
+
+async function reverseGeocode(lat, lon) {
+  const url =
+    `${NOMINATIM_REVERSE_URL}?format=json&lat=${encodeURIComponent(lat)}` +
+    `&lon=${encodeURIComponent(lon)}&zoom=14&addressdetails=1`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`reverse ${res.status}`);
+  return await res.json();
+}
 
 function primaryName(s) {
   return (s.display_name || "").split(",")[0].trim() || s.display_name || "—";
@@ -3927,11 +3964,73 @@ function PostItemSheet({ open, onClose, currentUser }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  // Geolocation auto-detect state
+  const [gpsLoading, setGpsLoading] = useState(false);
+  const [gpsError, setGpsError] = useState("");
+  const gpsAttemptedRef = useRef(false);
+
   useEffect(() => {
     if (open && currentUser) {
       setForm((f) => ({ ...f, email: f.email || currentUser.email || "" }));
     }
   }, [open, currentUser]);
+
+  // Reset the one-shot auto-detect flag when the sheet closes so the
+  // next open can auto-detect again if the location field is empty.
+  useEffect(() => {
+    if (!open) {
+      gpsAttemptedRef.current = false;
+      setGpsError("");
+      setGpsLoading(false);
+    }
+  }, [open]);
+
+  const handleUseCurrentLocation = useCallback(async () => {
+    if (!navigator.geolocation) {
+      setGpsError("Geolocation isn't supported by this browser");
+      return;
+    }
+    setGpsError("");
+    setGpsLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        let label;
+        try {
+          const result = await reverseGeocode(lat, lon);
+          label = shortAddressLabel(result, lat, lon);
+        } catch {
+          label = shortAddressLabel(null, lat, lon);
+        }
+        setForm((f) => ({ ...f, location: label, lat, lon }));
+        setGpsLoading(false);
+      },
+      (err) => {
+        const msg =
+          err?.code === 1
+            ? "Location permission denied — type a place below instead"
+            : err?.code === 2
+              ? "Location unavailable — type a place below instead"
+              : err?.code === 3
+                ? "Location request timed out — try again or type below"
+                : "Couldn't get your location — type a place below instead";
+        setGpsError(msg);
+        setGpsLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+    );
+  }, []);
+
+  // Auto-detect once when the sheet opens, only if the location field
+  // is still empty (so we don't overwrite a value the user typed).
+  useEffect(() => {
+    if (!open || gpsAttemptedRef.current) return;
+    if (form.location && form.location.trim()) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    gpsAttemptedRef.current = true;
+    handleUseCurrentLocation();
+  }, [open, form.location, handleUseCurrentLocation]);
 
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -4044,9 +4143,32 @@ function PostItemSheet({ open, onClose, currentUser }) {
                 <Field label="Item Name" v={form.item} onChange={update("item")} placeholder="e.g., AirPods Pro, Student ID" full />
 
                 <div className="sm:col-span-2">
-                  <label className="block text-[10px] uppercase tracking-[0.18em] text-slate-400 font-mono mb-1.5">
-                    Location
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5 gap-2">
+                    <label className="block text-[10px] uppercase tracking-[0.18em] text-slate-400 font-mono">
+                      Location
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleUseCurrentLocation}
+                      disabled={gpsLoading}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[10px] font-mono uppercase tracking-wider transition-colors disabled:opacity-70",
+                        Number.isFinite(form.lat) && Number.isFinite(form.lon)
+                          ? "bg-cyan-400/15 border-cyan-400/40 text-cyan-200 shadow-[0_0_10px_rgba(34,211,238,0.22)]"
+                          : "bg-white/[0.04] border-white/[0.08] text-slate-300 hover:text-white hover:border-cyan-400/40",
+                      )}
+                      title="Auto-fill from your device's location"
+                    >
+                      {gpsLoading ? (
+                        <>
+                          <span className="w-2.5 h-2.5 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin" />
+                          detecting…
+                        </>
+                      ) : (
+                        <>📍 Use current location</>
+                      )}
+                    </button>
+                  </div>
                   <LocationAutocomplete
                     value={form.location}
                     onChange={(v) =>
@@ -4068,7 +4190,12 @@ function PostItemSheet({ open, onClose, currentUser }) {
                     }
                     placeholder="Try Hyd, HITEC City, JFK Airport…"
                   />
-                  {Number.isFinite(form.lat) && Number.isFinite(form.lon) ? (
+                  {gpsError ? (
+                    <div className="mt-1.5 text-[10px] font-mono text-rose-300 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                      {gpsError}
+                    </div>
+                  ) : Number.isFinite(form.lat) && Number.isFinite(form.lon) ? (
                     <div className="mt-1.5 inline-flex items-center gap-1.5 text-[10px] font-mono text-cyan-300">
                       <span className="relative flex w-1.5 h-1.5">
                         <span className="absolute inset-0 rounded-full bg-cyan-400 animate-ping opacity-70" />
@@ -4077,9 +4204,14 @@ function PostItemSheet({ open, onClose, currentUser }) {
                       Coords locked · {form.lat.toFixed(4)}°,{" "}
                       {form.lon.toFixed(4)}°
                     </div>
+                  ) : gpsLoading ? (
+                    <div className="mt-1.5 text-[10px] font-mono text-cyan-300/80 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                      Reading GPS · reverse-geocoding…
+                    </div>
                   ) : (
                     <div className="mt-1.5 text-[10px] font-mono text-slate-500">
-                      Pick a suggestion to attach precise coordinates to this item.
+                      Tap "Use current location" or pick a suggestion above.
                     </div>
                   )}
                 </div>
