@@ -198,10 +198,42 @@ select.tn-input {
   background: linear-gradient(135deg, rgba(34, 211, 238, 0.85), rgba(168, 85, 247, 0.85));
 }
 
+/* ----- Map sizing (NOT dependent on Tailwind JIT) -------------- */
+/*
+   Pinned dimensions for the Leaflet container so the map has
+   a real height the moment React mounts — even before the
+   Tailwind CDN's runtime has injected its JIT classes.
+*/
+.tn-map-canvas {
+  display: block;
+  width: 100%;
+  height: 62vh;
+  min-height: 440px;
+  position: relative;
+}
+@media (min-width: 1024px) {
+  .tn-map-canvas {
+    height: 70vh;
+    min-height: 560px;
+  }
+}
+
 /* ----- Leaflet dark-theme overrides ---------------------------- */
 .leaflet-container {
   background: #050614 !important;
   font-family: "Space Grotesk", system-ui, sans-serif !important;
+  /* baseline so the map is never collapsed even if container fails */
+  min-height: 200px;
+  outline: none;
+}
+.leaflet-pane,
+.leaflet-tile-container,
+.leaflet-tile,
+.leaflet-marker-icon,
+.leaflet-marker-shadow {
+  /* Leaflet relies on these being unmodified — guard against
+     accidental global resets from frameworks/CDNs. */
+  box-sizing: content-box !important;
 }
 .leaflet-control-attribution {
   background: rgba(11, 13, 28, 0.7) !important;

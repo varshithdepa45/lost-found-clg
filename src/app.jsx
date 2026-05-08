@@ -296,9 +296,11 @@ function locationToCoords(location) {
 
 // Prefer real lat/lon (from geocoded autocomplete) and gracefully
 // fall back to deterministic hashed coords for legacy items.
+// `parseFloat` accepts both numbers and numeric strings, so this is
+// robust regardless of how Firestore round-trips the field.
 function itemCoords(item) {
-  const lat = Number(item?.lat);
-  const lon = Number(item?.lon);
+  const lat = parseFloat(item?.lat);
+  const lon = parseFloat(item?.lon);
   if (
     Number.isFinite(lat) &&
     Number.isFinite(lon) &&
@@ -911,43 +913,138 @@ function InteractiveMap({
     [itemsWithCoords, filter],
   );
 
-  // One-time map init
+  // One-time map init — defensive against load-order races and
+  // post-mount layout shifts (Tailwind CDN JIT, fonts, responsive
+  // breakpoints).
   useEffect(() => {
-    if (!mapEl.current || mapInstance.current || !window.L) return;
-    const L = window.L;
-    const map = L.map(mapEl.current, {
-      center: MAP_CENTER,
-      zoom: 13,
-      zoomControl: true,
-      attributionControl: true,
-      scrollWheelZoom: false,
-    });
-    L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png",
-      {
-        attribution: "© OpenStreetMap, © CartoDB",
-        subdomains: "abcd",
-        maxZoom: 19,
-      },
-    ).addTo(map);
-    L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",
-      { subdomains: "abcd", maxZoom: 19 },
-    ).addTo(map);
-    radiusLayer.current = L.layerGroup().addTo(map);
-    linksLayer.current = L.layerGroup().addTo(map);
-    markersLayer.current = L.layerGroup().addTo(map);
-    mapInstance.current = map;
+    let cancelled = false;
+    let resizeObs = null;
+    let recalcTimers = [];
+    let pollTimer = null;
 
-    // Click on empty map → deselect and close the card
-    map.on("click", () => {
-      setSelectedId(null);
-      setCardItem(null);
-    });
+    const invalidate = () => {
+      if (cancelled) return;
+      const m = mapInstance.current;
+      if (!m) return;
+      try {
+        m.invalidateSize({ animate: false });
+      } catch (e) {
+        console.warn("[TraceNet] invalidateSize failed", e);
+      }
+    };
+
+    const initMap = () => {
+      if (cancelled || mapInstance.current || !mapEl.current) return;
+      const L = window.L;
+      try {
+        const map = L.map(mapEl.current, {
+          center: MAP_CENTER,
+          zoom: 13,
+          zoomControl: true,
+          attributionControl: true,
+          scrollWheelZoom: false,
+          // Defensive: prefer canvas renderer if SVG is somehow blocked.
+          preferCanvas: false,
+        });
+
+        // Base dark tiles (CartoDB) + label overlay
+        const base = L.tileLayer(
+          "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png",
+          {
+            attribution:
+              '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: "abcd",
+            maxZoom: 19,
+            crossOrigin: true,
+          },
+        );
+        let tileErrorCount = 0;
+        base.on("tileerror", (e) => {
+          tileErrorCount++;
+          if (tileErrorCount <= 3) {
+            console.warn(
+              "[TraceNet] tile error",
+              e?.tile?.src || "(no src)",
+              "— check network/CDN",
+            );
+          }
+        });
+        base.addTo(map);
+
+        L.tileLayer(
+          "https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",
+          { subdomains: "abcd", maxZoom: 19, crossOrigin: true },
+        ).addTo(map);
+
+        radiusLayer.current = L.layerGroup().addTo(map);
+        linksLayer.current = L.layerGroup().addTo(map);
+        markersLayer.current = L.layerGroup().addTo(map);
+        mapInstance.current = map;
+
+        map.on("click", () => {
+          setSelectedId(null);
+          setCardItem(null);
+        });
+
+        // Force size recalculation. Leaflet measures the container
+        // once on init; we need to retry after the next paint and
+        // again later in case Tailwind/fonts reflow.
+        requestAnimationFrame(invalidate);
+        recalcTimers.push(setTimeout(invalidate, 200));
+        recalcTimers.push(setTimeout(invalidate, 800));
+        recalcTimers.push(setTimeout(invalidate, 2000));
+
+        // Watch the container for size changes (responsive layout)
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObs = new ResizeObserver(invalidate);
+          resizeObs.observe(mapEl.current);
+        }
+
+        // Window-level events as a final safety net
+        window.addEventListener("resize", invalidate);
+        window.addEventListener("orientationchange", invalidate);
+        window.addEventListener("load", invalidate);
+      } catch (err) {
+        console.error("[TraceNet] map init failed:", err);
+      }
+    };
+
+    // Wait for Leaflet UMD to load (in case JSX module raced ahead)
+    const tryStart = (attempt = 0) => {
+      if (cancelled) return;
+      if (window.L && mapEl.current) {
+        // Defer one frame so any pending CSS / Tailwind JIT has applied
+        requestAnimationFrame(initMap);
+        return;
+      }
+      if (attempt >= 100) {
+        console.error(
+          "[TraceNet] window.L never became available — Leaflet failed to load",
+        );
+        return;
+      }
+      pollTimer = setTimeout(() => tryStart(attempt + 1), 80);
+    };
+    tryStart();
 
     return () => {
-      map.remove();
-      mapInstance.current = null;
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      recalcTimers.forEach(clearTimeout);
+      try {
+        resizeObs?.disconnect();
+      } catch {}
+      window.removeEventListener("resize", invalidate);
+      window.removeEventListener("orientationchange", invalidate);
+      window.removeEventListener("load", invalidate);
+      if (mapInstance.current) {
+        try {
+          mapInstance.current.remove();
+        } catch (e) {
+          console.warn("[TraceNet] map cleanup error", e);
+        }
+        mapInstance.current = null;
+      }
       markersLayer.current = null;
       radiusLayer.current = null;
       linksLayer.current = null;
@@ -974,7 +1071,15 @@ function InteractiveMap({
     markersById.current.clear();
 
     visibleItems.forEach((item) => {
-      const [lat, lng] = item.coords;
+      const coords = item.coords;
+      if (
+        !Array.isArray(coords) ||
+        !Number.isFinite(coords[0]) ||
+        !Number.isFinite(coords[1])
+      ) {
+        return; // skip silently — itemCoords always provides a fallback
+      }
+      const [lat, lng] = coords;
       const isLost = item.type === "lost";
       const color = isLost ? "#fb7185" : "#34d399";
       const isSelected = item.id === selectedId;
@@ -1218,10 +1323,13 @@ function InteractiveMap({
       </div>
 
       <div className="relative tn-glass rounded-3xl overflow-hidden">
-        <div
-          ref={mapEl}
-          className="w-full h-[62vh] min-h-[440px] lg:h-[70vh] lg:min-h-[560px]"
-        />
+        {/*
+          Sizing is provided by .tn-map-canvas in styles.css with
+          explicit pixel min-heights so the map has a guaranteed
+          height even before Tailwind's CDN JIT finishes applying
+          its arbitrary-value classes.
+        */}
+        <div ref={mapEl} className="tn-map-canvas" />
 
         <div className="pointer-events-none absolute inset-0 rounded-3xl tn-grad-border opacity-70 z-[400]" />
 
