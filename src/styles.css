@@ -329,6 +329,62 @@ select.tn-input {
   animation-duration: 1.4s;
 }
 
+/* Lost: urgent vibe — dashed inner ring, faster pulse */
+.tn-mk-lost .tn-mk-core {
+  border-style: dashed;
+}
+.tn-mk-lost .tn-mk-pulse {
+  animation-duration: 1.6s;
+}
+
+/* Found: calm — solid ring, slower steadier pulse */
+.tn-mk-found .tn-mk-pulse {
+  animation-duration: 2.4s;
+}
+
+/* Recovered: celebratory gold marker with double ring + ✓ badge */
+.tn-mk-recovered {
+  filter: drop-shadow(0 0 10px rgba(251, 191, 36, 0.55));
+}
+.tn-mk-recovered .tn-mk-core {
+  background: linear-gradient(135deg, #fde68a, #f59e0b);
+  color: #2a1700;
+  font-weight: 700;
+  border-color: #fbbf24;
+  border-width: 2px;
+  box-shadow:
+    0 0 0 2px rgba(11, 13, 28, 0.7),
+    0 0 18px #fbbf24,
+    inset 0 0 6px rgba(255, 255, 255, 0.55);
+}
+.tn-mk-recovered .tn-mk-pulse {
+  background: #fbbf24;
+  opacity: 0.5;
+  animation-duration: 1.4s;
+}
+.tn-mk-recovered .tn-mk-pulse-2 {
+  animation-delay: 0.7s;
+  opacity: 0.32;
+}
+.tn-mk-check {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #34d399, #10b981);
+  border: 2px solid #0a0c1a;
+  font-size: 8px;
+  font-weight: 800;
+  color: #052e1a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 4;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
+}
+
 /* ----- Beautiful popup cards ----------------------------------- */
 .tn-popup .leaflet-popup-content-wrapper {
   padding: 0 !important;

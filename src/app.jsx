@@ -129,11 +129,34 @@ async function createClaim({ item, currentUser, note }) {
   return ref.id;
 }
 
-async function setClaimStatus(claimId, status) {
+async function setClaimStatus(claim, status) {
+  // Backwards-compatible: accept either a claim object or a raw id.
+  const claimId = typeof claim === "string" ? claim : claim?.id;
+  if (!claimId) throw new Error("setClaimStatus: missing claim id");
   await updateDoc(doc(db, "claims", claimId), {
     status,
     decidedAt: serverTimestamp(),
   });
+
+  // When a claim is approved, denormalize onto the item so the
+  // "recovered" marker is visible to every visitor (not gated behind
+  // a single user's claim subscription).
+  const itemId = typeof claim === "string" ? null : claim?.itemId;
+  if (status === "approved" && itemId) {
+    try {
+      await updateDoc(doc(db, "items", itemId), {
+        matched: true,
+        recoveredAt: serverTimestamp(),
+      });
+    } catch (e) {
+      // The owner field write may be denied by rules in some
+      // configurations — log but don't break the approval flow.
+      console.warn(
+        "[TraceNet] approve succeeded but item recovery flag failed:",
+        e?.message || e,
+      );
+    }
+  }
 }
 
 async function sendChatMessage({ claimId, currentUser, text }) {
@@ -905,13 +928,23 @@ function InteractiveMap({
     [items],
   );
 
-  const visibleItems = useMemo(
-    () =>
-      filter === "all"
-        ? itemsWithCoords
-        : itemsWithCoords.filter((i) => i.type === filter),
-    [itemsWithCoords, filter],
-  );
+  // An item is treated as "recently recovered" once an approved claim
+  // has flipped its `matched` flag. We honor a 14-day window so older
+  // matches don't keep glowing forever.
+  const RECOVERY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+  const isRecoveredItem = useCallback((item) => {
+    if (!item?.matched) return false;
+    const ms = tsToMillis(item.recoveredAt);
+    if (!ms) return true; // matched but no timestamp — still treat as recovered
+    return Date.now() - ms <= RECOVERY_WINDOW_MS;
+  }, []);
+
+  const visibleItems = useMemo(() => {
+    if (filter === "all") return itemsWithCoords;
+    if (filter === "recovered")
+      return itemsWithCoords.filter((i) => isRecoveredItem(i));
+    return itemsWithCoords.filter((i) => i.type === filter);
+  }, [itemsWithCoords, filter, isRecoveredItem]);
 
   // One-time map init — defensive against load-order races and
   // post-mount layout shifts (Tailwind CDN JIT, fonts, responsive
@@ -1070,6 +1103,9 @@ function InteractiveMap({
     linksLayer.current.clearLayers();
     markersById.current.clear();
 
+    // One-shot diagnostic so missing markers are easy to find in DevTools.
+    const counts = { lost: 0, found: 0, recovered: 0, skipped: 0, unknown: 0 };
+
     visibleItems.forEach((item) => {
       const coords = item.coords;
       if (
@@ -1077,32 +1113,59 @@ function InteractiveMap({
         !Number.isFinite(coords[0]) ||
         !Number.isFinite(coords[1])
       ) {
-        return; // skip silently — itemCoords always provides a fallback
+        counts.skipped++;
+        return; // skip — itemCoords always provides a fallback so this is rare
       }
       const [lat, lng] = coords;
+      const recovered = isRecoveredItem(item);
       const isLost = item.type === "lost";
-      const color = isLost ? "#fb7185" : "#34d399";
+      const isFound = item.type === "found";
+      if (!isLost && !isFound) counts.unknown++;
+
+      // Determine kind in priority order: recovered overrides lost/found
+      const kind = recovered ? "recovered" : isLost ? "lost" : "found";
+      counts[kind]++;
+      const color =
+        kind === "recovered"
+          ? "#fbbf24" // amber/gold
+          : kind === "lost"
+            ? "#fb7185" // rose
+            : "#34d399"; // emerald
+
       const isSelected = item.id === selectedId;
       const isDimmed = !!selectedId && !isSelected;
       const glyph = CAT_GLYPH[item.category] || "📍";
 
-      // Per-item radius circle
+      // Radius circle — recovered uses a dotted gold ring, found
+      // uses dashed emerald, lost uses tighter dashed rose so the
+      // three are distinguishable even at small zoom levels.
       L.circle([lat, lng], {
-        radius: 350,
+        radius: kind === "recovered" ? 420 : 350,
         color,
-        weight: 1,
-        opacity: isDimmed ? 0.18 : 0.55,
+        weight: kind === "recovered" ? 1.4 : 1,
+        opacity: isDimmed ? 0.18 : kind === "recovered" ? 0.7 : 0.55,
         fillColor: color,
-        fillOpacity: isDimmed ? 0.02 : 0.07,
-        dashArray: "4 6",
+        fillOpacity: isDimmed ? 0.02 : kind === "recovered" ? 0.1 : 0.07,
+        dashArray:
+          kind === "recovered" ? "2 6" : kind === "lost" ? "3 5" : "4 6",
         interactive: false,
       }).addTo(radiusLayer.current);
 
-      // Custom marker
+      // Custom marker — three visual variants
+      const recoveryBadge =
+        kind === "recovered"
+          ? '<span class="tn-mk-check">✓</span>'
+          : "";
+      const extraRing =
+        kind === "recovered"
+          ? '<span class="tn-mk-pulse tn-mk-pulse-2"></span>'
+          : "";
       const html = `
-        <div class="tn-mk ${isLost ? "tn-mk-lost" : "tn-mk-found"} ${isSelected ? "tn-mk-active" : ""} ${isDimmed ? "tn-mk-dim" : ""}" style="--c:${color}">
+        <div class="tn-mk tn-mk-${kind} ${isSelected ? "tn-mk-active" : ""} ${isDimmed ? "tn-mk-dim" : ""}" style="--c:${color}">
           <span class="tn-mk-pulse"></span>
+          ${extraRing}
           <span class="tn-mk-core">${glyph}</span>
+          ${recoveryBadge}
         </div>
       `;
       const icon = L.divIcon({
@@ -1112,7 +1175,6 @@ function InteractiveMap({
         iconAnchor: [17, 17],
       });
       const marker = L.marker([lat, lng], { icon, riseOnHover: true });
-      // Click opens the rich React MarkerCard instead of a Leaflet popup
       marker.on("click", () => {
         setSelectedId(item.id);
         setCardItem(item);
@@ -1120,6 +1182,13 @@ function InteractiveMap({
       marker.addTo(markersLayer.current);
       markersById.current.set(item.id, marker);
     });
+
+    // Diagnostic summary (non-spammy: one line per render).
+    if (visibleItems.length > 0) {
+      console.info(
+        `[TraceNet] map render — lost:${counts.lost} found:${counts.found} recovered:${counts.recovered} unknown:${counts.unknown} skipped:${counts.skipped} (filter=${filter})`,
+      );
+    }
 
     // Nearby visualization for selected
     if (selectedId) {
@@ -1241,6 +1310,7 @@ function InteractiveMap({
 
   const lostCount = items.filter((i) => i.type === "lost").length;
   const foundCount = items.filter((i) => i.type === "found").length;
+  const recoveredCount = items.filter((i) => isRecoveredItem(i)).length;
   const selectedItem = selectedId
     ? visibleItems.find((i) => i.id === selectedId)
     : null;
@@ -1310,7 +1380,7 @@ function InteractiveMap({
             Click a pin to reveal its proximity radius and nearby items in the network.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-2 text-xs flex-wrap">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.06]">
             <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.7)]" />
             <span className="text-slate-300 font-mono">Lost · {lostCount}</span>
@@ -1319,6 +1389,17 @@ function InteractiveMap({
             <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
             <span className="text-slate-300 font-mono">Found · {foundCount}</span>
           </div>
+          {recoveredCount > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-400/[0.10] border border-amber-400/40 shadow-[0_0_12px_rgba(251,191,36,0.18)]">
+              <span className="relative flex w-2 h-2">
+                <span className="absolute inset-0 rounded-full bg-amber-300 animate-ping opacity-70" />
+                <span className="relative w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.8)]" />
+              </span>
+              <span className="text-amber-200 font-mono">
+                Recovered · {recoveredCount}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1346,8 +1427,9 @@ function InteractiveMap({
         <div className="absolute top-4 right-4 z-[400] flex p-1 rounded-xl bg-black/60 backdrop-blur border border-white/[0.08] text-[11px] font-mono">
           {[
             { k: "all", label: "All" },
-            { k: "lost", label: "Lost" },
-            { k: "found", label: "Found" },
+            { k: "lost", label: "Lost", c: "rose" },
+            { k: "found", label: "Found", c: "emerald" },
+            { k: "recovered", label: "Recovered", c: "amber" },
           ].map((o) => (
             <button
               key={o.k}
@@ -1357,13 +1439,24 @@ function InteractiveMap({
                 setFilter(o.k);
               }}
               className={cn(
-                "px-3 py-1.5 rounded-lg transition-all uppercase tracking-wider",
+                "px-3 py-1.5 rounded-lg transition-all uppercase tracking-wider flex items-center gap-1.5",
                 filter === o.k
-                  ? "bg-gradient-to-br from-cyan-500/30 to-purple-500/30 text-white border border-white/[0.12] shadow-[0_0_14px_rgba(34,211,238,0.25)]"
+                  ? o.c === "amber"
+                    ? "bg-amber-400/25 text-amber-100 border border-amber-400/45 shadow-[0_0_14px_rgba(251,191,36,0.3)]"
+                    : o.c === "rose"
+                      ? "bg-rose-400/20 text-rose-100 border border-rose-400/40 shadow-[0_0_14px_rgba(251,113,133,0.25)]"
+                      : o.c === "emerald"
+                        ? "bg-emerald-400/20 text-emerald-100 border border-emerald-400/40 shadow-[0_0_14px_rgba(52,211,153,0.25)]"
+                        : "bg-gradient-to-br from-cyan-500/30 to-purple-500/30 text-white border border-white/[0.12] shadow-[0_0_14px_rgba(34,211,238,0.25)]"
                   : "text-slate-400 hover:text-slate-200",
               )}
             >
               {o.label}
+              {o.k === "recovered" && recoveredCount > 0 && (
+                <span className="text-[9px] tabular-nums opacity-80">
+                  {recoveredCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -2512,7 +2605,7 @@ function ClaimsPanel({
   const handleApprove = async (claim) => {
     setBusyId(claim.id);
     try {
-      await setClaimStatus(claim.id, "approved");
+      await setClaimStatus(claim, "approved");
     } catch (e) {
       alert("Approve failed: " + e.message);
     } finally {
@@ -2522,7 +2615,7 @@ function ClaimsPanel({
   const handleReject = async (claim) => {
     setBusyId(claim.id);
     try {
-      await setClaimStatus(claim.id, "rejected");
+      await setClaimStatus(claim, "rejected");
     } catch (e) {
       alert("Reject failed: " + e.message);
     } finally {
