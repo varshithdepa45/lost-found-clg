@@ -1,6 +1,6 @@
 # � Campus Lost & Found
 
-> **Live Website:** https://varshithdepa45.github.io/lost-found-clg
+> **Live Website:** https://varshithdepa45.github.io/Tracenet-ai
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### **Click Here to Open:**
 
-### 👉 **[https://varshithdepa45.github.io/lost-found-clg](https://varshithdepa45.github.io/lost-found-clg)** 👈
+### 👉 **[https://varshithdepa45.github.io/Tracenet-ai](https://varshithdepa45.github.io/Tracenet-ai)** 👈
 
 ---
 
@@ -20,7 +20,7 @@
 
 ### **Step 1: Sign Up** ✍️
 
-1. Go to the website: [https://varshithdepa45.github.io/lost-found-clg](https://varshithdepa45.github.io/lost-found-clg)
+1. Go to the website: [https://varshithdepa45.github.io/Tracenet-ai](https://varshithdepa45.github.io/Tracenet-ai)
 2. Click the **"Sign In"** button (top right)
 3. Click **"Sign Up"** to create a new account
 4. Enter:
@@ -177,7 +177,7 @@ A: System automatically detects when a lost + found item is the same, at the sam
 **Website Link:**
 
 ```
-https://varshithdepa45.github.io/lost-found-clg
+https://varshithdepa45.github.io/Tracenet-ai
 ```
 
 Tell your friends:
@@ -197,7 +197,7 @@ Tell your friends:
 
 ## 🚀 **Quick Start (30 seconds)**
 
-1. Go to: https://varshithdepa45.github.io/lost-found-clg
+1. Go to: https://varshithdepa45.github.io/Tracenet-ai
 2. Click "Sign Up"
 3. Enter email & password
 4. Fill the form on the left
@@ -246,7 +246,7 @@ Tell your friends:
 
 ## 🎯 **Start Using Now!**
 
-### **👉 [Click Here: https://varshithdepa45.github.io/lost-found-clg](https://varshithdepa45.github.io/lost-found-clg)**
+### 👉 [Click Here: https://varshithdepa45.github.io/Tracenet-ai](https://varshithdepa45.github.io/Tracenet-ai)
 
 **Happy finding!** 🎉📍
 

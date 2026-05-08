@@ -612,11 +612,63 @@ function LiveStats({ items }) {
 
 /* ================== INTERACTIVE MAP ================== */
 
+function buildPopupHtml(item) {
+  const isLost = item.type === "lost";
+  const color = isLost ? "#fb7185" : "#34d399";
+  const cat = item.category || "—";
+  const glyph = CAT_GLYPH[item.category] || "📦";
+  const photoHtml = item.photoData
+    ? `<div class="tn-pop-photo"><img src="${item.photoData}" alt=""/></div>`
+    : `<div class="tn-pop-photo tn-pop-photo-empty" style="--c:${color}"><span>${glyph}</span></div>`;
+  const desc = item.description
+    ? `<div class="tn-pop-desc">${escapeHtml(item.description)}</div>`
+    : "";
+  return `
+    <div class="tn-pop">
+      ${photoHtml}
+      <div class="tn-pop-head">
+        <span class="tn-pop-badge" style="--c:${color}">${isLost ? "Lost" : "Found"}</span>
+        <span class="tn-pop-cat"><span class="tn-pop-glyph">${glyph}</span>${escapeHtml(cat)}</span>
+      </div>
+      <div class="tn-pop-title">${escapeHtml(item.itemOriginal || item.item || "—")}</div>
+      <div class="tn-pop-meta">
+        <div><span>📍</span>${escapeHtml(item.locationOriginal || item.location || "—")}</div>
+        <div><span>📅</span>${escapeHtml(formatDate(item.date))}</div>
+      </div>
+      ${desc}
+    </div>
+  `;
+}
+
 function InteractiveMap({ items }) {
   const mapEl = useRef(null);
   const mapInstance = useRef(null);
   const markersLayer = useRef(null);
+  const radiusLayer = useRef(null);
+  const linksLayer = useRef(null);
+  const markersById = useRef(new Map());
+  const [filter, setFilter] = useState("all");
+  const [selectedId, setSelectedId] = useState(null);
+  const [scrollZoom, setScrollZoom] = useState(false);
 
+  const itemsWithCoords = useMemo(
+    () =>
+      items.map((i) => ({
+        ...i,
+        coords: locationToCoords(i.locationOriginal || i.location || ""),
+      })),
+    [items],
+  );
+
+  const visibleItems = useMemo(
+    () =>
+      filter === "all"
+        ? itemsWithCoords
+        : itemsWithCoords.filter((i) => i.type === filter),
+    [itemsWithCoords, filter],
+  );
+
+  // One-time map init
   useEffect(() => {
     if (!mapEl.current || mapInstance.current || !window.L) return;
     const L = window.L;
@@ -639,58 +691,159 @@ function InteractiveMap({ items }) {
       "https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",
       { subdomains: "abcd", maxZoom: 19 },
     ).addTo(map);
+    radiusLayer.current = L.layerGroup().addTo(map);
+    linksLayer.current = L.layerGroup().addTo(map);
     markersLayer.current = L.layerGroup().addTo(map);
     mapInstance.current = map;
+
+    // Click on empty map → deselect
+    map.on("click", () => setSelectedId(null));
+
     return () => {
       map.remove();
       mapInstance.current = null;
       markersLayer.current = null;
+      radiusLayer.current = null;
+      linksLayer.current = null;
+      markersById.current.clear();
     };
   }, []);
 
+  // Toggle scroll-wheel zoom
+  useEffect(() => {
+    if (!mapInstance.current) return;
+    if (scrollZoom) mapInstance.current.scrollWheelZoom.enable();
+    else mapInstance.current.scrollWheelZoom.disable();
+  }, [scrollZoom]);
+
+  // Render markers, radii, and connections
   useEffect(() => {
     if (!mapInstance.current || !markersLayer.current || !window.L) return;
     const L = window.L;
+    const map = mapInstance.current;
+
     markersLayer.current.clearLayers();
-    items.forEach((item) => {
-      const [lat, lng] = locationToCoords(item.locationOriginal || item.location || "");
+    radiusLayer.current.clearLayers();
+    linksLayer.current.clearLayers();
+    markersById.current.clear();
+
+    visibleItems.forEach((item) => {
+      const [lat, lng] = item.coords;
       const isLost = item.type === "lost";
       const color = isLost ? "#fb7185" : "#34d399";
+      const isSelected = item.id === selectedId;
+      const isDimmed = !!selectedId && !isSelected;
+      const glyph = CAT_GLYPH[item.category] || "📍";
+
+      // Per-item radius circle
+      L.circle([lat, lng], {
+        radius: 350,
+        color,
+        weight: 1,
+        opacity: isDimmed ? 0.18 : 0.55,
+        fillColor: color,
+        fillOpacity: isDimmed ? 0.02 : 0.07,
+        dashArray: "4 6",
+        interactive: false,
+      }).addTo(radiusLayer.current);
+
+      // Custom marker
+      const html = `
+        <div class="tn-mk ${isLost ? "tn-mk-lost" : "tn-mk-found"} ${isSelected ? "tn-mk-active" : ""} ${isDimmed ? "tn-mk-dim" : ""}" style="--c:${color}">
+          <span class="tn-mk-pulse"></span>
+          <span class="tn-mk-core">${glyph}</span>
+        </div>
+      `;
       const icon = L.divIcon({
         className: "tn-marker-icon",
-        html: `<div class="tn-marker" style="color:${color}"></div>`,
-        iconSize: [18, 18],
-        iconAnchor: [9, 9],
+        html,
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
       });
-      const marker = L.marker([lat, lng], { icon });
-      marker.bindPopup(`
-        <div style="min-width:200px">
-          <div style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;background:${isLost ? "rgba(251,113,133,0.18)" : "rgba(52,211,153,0.18)"};color:${color};margin-bottom:8px;">${item.type || "?"}</div>
-          <div style="font-weight:600;font-size:14px;color:#e2e8f0;margin-bottom:3px;">${escapeHtml(item.itemOriginal || item.item || "—")}</div>
-          <div style="font-size:12px;color:#94a3b8;margin-bottom:2px;">📍 ${escapeHtml(item.locationOriginal || item.location || "—")}</div>
-          <div style="font-size:12px;color:#94a3b8;">📅 ${escapeHtml(formatDate(item.date))}</div>
-        </div>
-      `);
+      const marker = L.marker([lat, lng], { icon, riseOnHover: true });
+      marker.bindPopup(buildPopupHtml(item), {
+        className: "tn-popup",
+        maxWidth: 280,
+        minWidth: 220,
+        offset: [0, -8],
+      });
+      marker.on("click", () => setSelectedId(item.id));
       marker.addTo(markersLayer.current);
+      markersById.current.set(item.id, marker);
     });
-  }, [items]);
+
+    // Nearby visualization for selected
+    if (selectedId) {
+      const selected = visibleItems.find((i) => i.id === selectedId);
+      if (selected) {
+        const sLatLng = L.latLng(selected.coords);
+        const nearby = visibleItems
+          .filter((i) => i.id !== selectedId)
+          .map((i) => ({ item: i, d: map.distance(sLatLng, L.latLng(i.coords)) }))
+          .filter((x) => x.d < 1000)
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 8);
+
+        nearby.forEach(({ item }) => {
+          const isPair = item.type !== selected.type;
+          L.polyline([selected.coords, item.coords], {
+            color: isPair ? "#a855f7" : "#22d3ee",
+            weight: isPair ? 2.2 : 1.4,
+            opacity: 0.85,
+            dashArray: isPair ? "8 8" : "5 6",
+            className: "tn-link",
+            interactive: false,
+          }).addTo(linksLayer.current);
+        });
+
+        // Outer search halo
+        L.circle(selected.coords, {
+          radius: 1000,
+          color: "#22d3ee",
+          weight: 1.5,
+          opacity: 0.55,
+          fillColor: "#22d3ee",
+          fillOpacity: 0.04,
+          dashArray: "8 6",
+          interactive: false,
+        }).addTo(linksLayer.current);
+      }
+    }
+  }, [visibleItems, selectedId]);
+
+  // Open the popup of the selected marker
+  useEffect(() => {
+    if (!selectedId || !mapInstance.current) return;
+    const m = markersById.current.get(selectedId);
+    if (m) m.openPopup();
+  }, [selectedId]);
 
   const lostCount = items.filter((i) => i.type === "lost").length;
   const foundCount = items.filter((i) => i.type === "found").length;
+  const selectedItem = selectedId
+    ? visibleItems.find((i) => i.id === selectedId)
+    : null;
+
+  const handleReset = () => {
+    setSelectedId(null);
+    if (mapInstance.current)
+      mapInstance.current.flyTo(MAP_CENTER, 13, { duration: 0.7 });
+  };
 
   return (
-    <section id="network-map" className="px-3 sm:px-6 lg:px-10 pt-8">
+    <section id="network-map" className="px-3 sm:px-6 lg:px-10 pt-6">
       <div className="flex items-end justify-between mb-4 px-1 flex-wrap gap-3">
         <div>
           <div className="text-[10px] uppercase tracking-[0.22em] text-cyan-400 font-mono mb-1.5 flex items-center gap-2">
             <span className="w-3 h-px bg-cyan-400" />
-            Section 01 · Map
+            Centerpiece · Live Map
           </div>
-          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-            Live Recovery Network
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-semibold tracking-tight">
+            <span className="tn-gradient-text">Recovery Network</span>{" "}
+            <span className="text-slate-100">Map</span>
           </h2>
           <p className="text-sm text-slate-400 mt-1">
-            Geo-distributed pings across the city, updated in real time.
+            Click a pin to reveal its proximity radius and nearby items in the network.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs">
@@ -706,18 +859,117 @@ function InteractiveMap({ items }) {
       </div>
 
       <div className="relative tn-glass rounded-3xl overflow-hidden">
-        <div ref={mapEl} className="w-full h-[58vh] min-h-[400px]" />
+        <div
+          ref={mapEl}
+          className="w-full h-[62vh] min-h-[440px] lg:h-[70vh] lg:min-h-[560px]"
+        />
+
         <div className="pointer-events-none absolute inset-0 rounded-3xl tn-grad-border opacity-70 z-[400]" />
-        <div className="pointer-events-none absolute top-4 left-4 z-[400] px-3 py-1.5 rounded-lg bg-black/55 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-300 flex items-center gap-2">
+
+        {/* Top-left: live counter */}
+        <div className="pointer-events-none absolute top-4 left-4 z-[400] px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-300 flex items-center gap-2">
           <span className="relative flex w-1.5 h-1.5">
             <span className="absolute inset-0 rounded-full bg-cyan-400 animate-ping opacity-70" />
             <span className="relative w-1.5 h-1.5 rounded-full bg-cyan-400" />
           </span>
-          {items.length} pins · live
+          {visibleItems.length} pins · live
         </div>
-        <div className="pointer-events-none absolute bottom-4 right-4 z-[400] hidden sm:block px-3 py-1.5 rounded-lg bg-black/55 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-400">
-          tracenet · {MAP_CENTER[0].toFixed(2)}°N {Math.abs(MAP_CENTER[1]).toFixed(2)}°W
+
+        {/* Top-right: filter pills */}
+        <div className="absolute top-4 right-4 z-[400] flex p-1 rounded-xl bg-black/60 backdrop-blur border border-white/[0.08] text-[11px] font-mono">
+          {[
+            { k: "all", label: "All" },
+            { k: "lost", label: "Lost" },
+            { k: "found", label: "Found" },
+          ].map((o) => (
+            <button
+              key={o.k}
+              onClick={() => {
+                setSelectedId(null);
+                setFilter(o.k);
+              }}
+              className={cn(
+                "px-3 py-1.5 rounded-lg transition-all uppercase tracking-wider",
+                filter === o.k
+                  ? "bg-gradient-to-br from-cyan-500/30 to-purple-500/30 text-white border border-white/[0.12] shadow-[0_0_14px_rgba(34,211,238,0.25)]"
+                  : "text-slate-400 hover:text-slate-200",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
         </div>
+
+        {/* Bottom-left: scroll-zoom toggle + reset */}
+        <div className="absolute bottom-4 left-4 z-[400] flex items-center gap-2">
+          <button
+            onClick={() => setScrollZoom((s) => !s)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg backdrop-blur border text-[10px] font-mono uppercase tracking-wider transition-colors",
+              scrollZoom
+                ? "bg-cyan-400/20 border-cyan-400/45 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.25)]"
+                : "bg-black/60 border-white/[0.08] text-slate-300 hover:text-white",
+            )}
+            title="Toggle scroll-wheel zoom"
+          >
+            scroll-zoom · {scrollZoom ? "on" : "off"}
+          </button>
+          {(selectedId || filter !== "all") && (
+            <button
+              onClick={handleReset}
+              className="px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-300 hover:text-white transition-colors"
+            >
+              ↺ reset
+            </button>
+          )}
+        </div>
+
+        {/* Bottom-right: hint or selected info */}
+        <AnimatePresence mode="wait">
+          {selectedItem ? (
+            <motion.div
+              key="selected"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.25 }}
+              className="absolute bottom-4 right-4 z-[400] max-w-[260px] px-3 py-2 rounded-xl bg-black/65 backdrop-blur border border-white/[0.08] text-xs"
+            >
+              <div className="text-[10px] uppercase tracking-[0.18em] text-cyan-300 font-mono mb-0.5">
+                Tracking · 1km radius
+              </div>
+              <div className="text-slate-100 font-medium truncate">
+                {selectedItem.itemOriginal || selectedItem.item || "—"}
+              </div>
+              <div className="text-slate-400 truncate font-mono text-[11px] mt-0.5">
+                {selectedItem.locationOriginal || selectedItem.location || "—"}
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="hint"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.25 }}
+              className="hidden sm:block absolute bottom-4 right-4 z-[400] px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur border border-white/[0.08] text-[10px] font-mono uppercase tracking-wider text-slate-400"
+            >
+              tap a pin → see nearby items
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Empty state overlay */}
+        {visibleItems.length === 0 && (
+          <div className="absolute inset-0 z-[450] flex items-center justify-center pointer-events-none">
+            <div className="px-5 py-3 rounded-xl bg-black/65 backdrop-blur border border-white/[0.08] text-center">
+              <div className="text-sm text-slate-200 font-medium">No pings on the map</div>
+              <div className="text-xs text-slate-500 mt-0.5 font-mono">
+                {filter === "all" ? "report an item to populate the network" : `no ${filter} reports yet`}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1837,8 +2089,8 @@ function App() {
       />
 
       <Hero items={items} onPostItem={() => setPostOpen(true)} />
-      <LiveStats items={items} />
       <InteractiveMap items={items} />
+      <LiveStats items={items} />
 
       <section className="px-3 sm:px-6 lg:px-10 pt-8">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
